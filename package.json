@@ -1,0 +1,16 @@
+{
+  "name": "tokyo-drift-clothing-shop",
+  "version": "1.0.0",
+  "description": "Tokyo Drift Haute Streetwear & Architectural Atelier Store",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test-verify.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
