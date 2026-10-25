@@ -46,9 +46,9 @@ if (candidateUrl) {
   } catch(e) {}
 }
 
-// In serverless environments, connect to Supabase PgBouncer transaction pooler on 6543 to eliminate connection limits
+// In serverless environments, connect to Supabase PgBouncer transaction pooler on 6543; in local/dev use 5432 session pooler
 if (pgHost && pgHost.includes('pooler.supabase.com')) {
-  pgPort = 6543;
+  pgPort = process.env.VERCEL ? 6543 : 5432;
 }
 
 if (!global._tdPgPool && pgHost && pgPassword) {
@@ -63,9 +63,9 @@ if (!global._tdPgPool && pgHost && pgPassword) {
       password: pgPassword,
       ssl: { rejectUnauthorized: false },
       max: maxPool,
-      idleTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 15000,
-      statement_timeout: 15000
+      statement_timeout: 30000
     });
     global._tdPgPool.on('error', (err) => {
       console.warn('[Tokyo Drift DB] Pool idle client dropped or reset:', err.message);
@@ -101,10 +101,14 @@ if (!pgPool) {
   }
 }
 
+let _initPromise = null;
+
 async function init() {
-  if (pgPool) {
-    try {
-      await pgPool.query(`
+  if (_initPromise) return _initPromise;
+  _initPromise = (async () => {
+    if (pgPool) {
+      try {
+        await pgPool.query(`
         CREATE TABLE IF NOT EXISTS td_products (
           id TEXT PRIMARY KEY,
           title TEXT,
@@ -281,6 +285,8 @@ async function init() {
       `);
     } catch(e) {}
   }
+  })();
+  return _initPromise;
 }
 
 // -------------------------------------------------------------------------
@@ -458,6 +464,32 @@ async function saveOrder(order) {
   const trk = order.trackingNumber || ('TKD-' + Math.floor(10000000 + Math.random() * 90000000));
   const dateStr = order.date || new Date().toISOString();
 
+  // --- UPI SETTLEMENT VERIFICATION & ATOMIC CLAIM BARRIER ---
+  if (order.payment && order.payment.method === 'upi') {
+    const utr = (order.payment.utr || order.payment.upiId || '').trim();
+    if (utr) {
+      const claim = await claimBankCredit(utr, order.id);
+      if (claim.claimed) {
+        order.status = `Paid & Verified via UPI (Ref: ${utr})`;
+        order.payment.status = 'Paid & Confirmed';
+        order.payment.utr = utr;
+        order.payment.autoVerified = true;
+      } else {
+        // Bank credit wasn't found or was already claimed by another order
+        order.status = 'Waiting for Admin Approval';
+        order.payment.status = 'Awaiting Admin Approval';
+        order.payment.autoVerified = false;
+        order.payment.unverifiedReason = claim.reason === 'already_claimed'
+          ? `Reference already claimed by ${claim.claimedBy || 'another order'}`
+          : 'Bank credit notification not yet verified in ledger';
+      }
+    } else {
+      order.status = 'Waiting for Admin Approval';
+      order.payment.status = 'Awaiting Admin Approval';
+      order.payment.autoVerified = false;
+    }
+  }
+
   if (pgPool) {
     try {
       await pgPool.query(`
@@ -590,16 +622,38 @@ async function getTracking(orderId) {
 
   if (!order) return null;
 
+  const isAwaiting = order.status && order.status.includes('Waiting for Admin');
+  const isCancelled = order.status && order.status.toLowerCase().includes('cancel');
+  const isConfirmed = order.status && (order.status.includes('Paid') || order.status.includes('Authorized') || order.status.includes('Confirmed'));
+
   return {
     orderId: order.id,
     status: order.status,
     carrier: order.carrier || 'Yamato Transport / DHL Express',
     trackingNumber: order.trackingNumber || `TKD-TRK-${order.id.replace('TKD-', '')}`,
     steps: [
-      { step: 'Order Acquired & Encrypted', date: order.date, completed: true },
-      { step: 'Archival Atelier Tailoring & Quality Inspection', date: new Date(new Date(order.date).getTime() + 3600000).toISOString(), completed: true },
-      { step: 'Courier Handover (Yamato Express)', date: new Date(new Date(order.date).getTime() + 86400000).toISOString(), completed: order.status !== 'Authorized' },
-      { step: 'Out for Global Delivery', date: 'Expected within 48h', completed: order.status === 'Delivered' }
+      { 
+        step: isAwaiting 
+          ? 'Payment Submitted · Awaiting Bank Clearance' 
+          : (isCancelled ? 'Order Cancelled' : 'Order Acquired & Encrypted'), 
+        date: order.date, 
+        completed: !isAwaiting && !isCancelled 
+      },
+      { 
+        step: isAwaiting ? 'Archival Atelier Tailoring (Queued Pending Payment Approval)' : 'Archival Atelier Tailoring & Quality Inspection', 
+        date: new Date(new Date(order.date).getTime() + 3600000).toISOString(), 
+        completed: isConfirmed && !isAwaiting && !isCancelled 
+      },
+      { 
+        step: 'Courier Handover (Yamato Express)', 
+        date: new Date(new Date(order.date).getTime() + 86400000).toISOString(), 
+        completed: (order.status.includes('Shipped') || order.status.includes('Delivered')) && !isAwaiting && !isCancelled 
+      },
+      { 
+        step: 'Out for Global Delivery', 
+        date: 'Expected within 48h', 
+        completed: order.status === 'Delivered' 
+      }
     ]
   };
 }
@@ -679,7 +733,7 @@ async function recordBankCredit({ utr, amount, sender, raw }) {
   return { success: true, utr: cleanUtr, amount: numAmount };
 }
 
-async function checkBankCredit({ amount, utr }) {
+async function checkBankCredit({ amount, utr, since }) {
   const numAmount = Number(amount);
   if (pgPool) {
     try {
@@ -688,10 +742,23 @@ async function checkBankCredit({ amount, utr }) {
         if (res.rows && res.rows.length > 0) return { found: true, credit: res.rows[0] };
       }
       if (numAmount > 0) {
-        const res = await pgPool.query(
-          "SELECT * FROM td_bank_credits WHERE amount = $1 AND claimed_by_order IS NULL AND created_at >= NOW() - INTERVAL '30 minutes' ORDER BY created_at DESC LIMIT 1",
-          [numAmount]
-        );
+        let sinceDate = null;
+        if (since) {
+          const d = new Date(since);
+          if (!isNaN(d.getTime())) sinceDate = d;
+        }
+        let res;
+        if (sinceDate) {
+          res = await pgPool.query(
+            "SELECT * FROM td_bank_credits WHERE amount = $1 AND claimed_by_order IS NULL AND created_at >= $2 ORDER BY created_at DESC LIMIT 1",
+            [numAmount, sinceDate]
+          );
+        } else {
+          res = await pgPool.query(
+            "SELECT * FROM td_bank_credits WHERE amount = $1 AND claimed_by_order IS NULL AND created_at >= NOW() - INTERVAL '10 minutes' ORDER BY created_at DESC LIMIT 1",
+            [numAmount]
+          );
+        }
         if (res.rows && res.rows.length > 0) return { found: true, credit: res.rows[0] };
       }
     } catch(e) {
@@ -705,7 +772,10 @@ async function checkBankCredit({ amount, utr }) {
         if (row) return { found: true, credit: row };
       }
       if (numAmount > 0) {
-        const row = sqliteDb.prepare("SELECT * FROM bank_credits WHERE amount = ? AND claimed_by_order IS NULL ORDER BY created_at DESC LIMIT 1").get(numAmount);
+        let sinceIso = since && !isNaN(new Date(since).getTime()) 
+          ? new Date(since).toISOString() 
+          : new Date(Date.now() - 600000).toISOString();
+        const row = sqliteDb.prepare("SELECT * FROM bank_credits WHERE amount = ? AND claimed_by_order IS NULL AND created_at >= ? ORDER BY created_at DESC LIMIT 1").get(numAmount, sinceIso);
         if (row) return { found: true, credit: row };
       }
     } catch(e) {}
@@ -714,17 +784,44 @@ async function checkBankCredit({ amount, utr }) {
 }
 
 async function claimBankCredit(utr, orderId) {
-  if (!utr || !orderId) return;
+  if (!utr || !orderId) return { success: false, claimed: false, reason: 'missing_params' };
+  const cleanUtr = String(utr).trim();
+  const cleanOrderId = String(orderId).trim();
+
   if (pgPool) {
     try {
-      await pgPool.query('UPDATE td_bank_credits SET claimed_by_order = $1 WHERE utr = $2', [orderId, utr.trim()]);
-    } catch(e) {}
+      const res = await pgPool.query(
+        'UPDATE td_bank_credits SET claimed_by_order = $1 WHERE utr = $2 AND (claimed_by_order IS NULL OR claimed_by_order = $1) RETURNING *',
+        [cleanOrderId, cleanUtr]
+      );
+      if (res.rows && res.rows.length > 0) {
+        return { success: true, claimed: true, credit: res.rows[0] };
+      }
+      const existing = await pgPool.query('SELECT * FROM td_bank_credits WHERE utr = $1', [cleanUtr]);
+      if (existing.rows && existing.rows.length > 0) {
+        return { success: false, claimed: false, reason: 'already_claimed', claimedBy: existing.rows[0].claimed_by_order };
+      }
+      return { success: false, claimed: false, reason: 'not_found' };
+    } catch(e) {
+      console.warn('[DB] claimBankCredit PG error:', e.message);
+    }
   }
+
   if (sqliteDb) {
     try {
-      sqliteDb.prepare('UPDATE bank_credits SET claimed_by_order = ? WHERE utr = ?').run(orderId, utr.trim());
+      const info = sqliteDb.prepare('UPDATE bank_credits SET claimed_by_order = ? WHERE utr = ? AND (claimed_by_order IS NULL OR claimed_by_order = ?)').run(cleanOrderId, cleanUtr, cleanOrderId);
+      if (info.changes > 0) {
+        return { success: true, claimed: true };
+      }
+      const existing = sqliteDb.prepare('SELECT * FROM bank_credits WHERE utr = ?').get(cleanUtr);
+      if (existing) {
+        return { success: false, claimed: false, reason: 'already_claimed', claimedBy: existing.claimed_by_order };
+      }
+      return { success: false, claimed: false, reason: 'not_found' };
     } catch(e) {}
   }
+
+  return { success: false, claimed: false, reason: 'no_db' };
 }
 
 async function verifyUtr(utr, orderId) {

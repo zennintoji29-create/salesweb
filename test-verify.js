@@ -298,6 +298,134 @@ async function runAllTests() {
 
     await db.deleteOrder(youpiTestOrderId);
 
+    // 8. Dual-Lane Automated Settlement, Gateway Telemetry & Concierge SRE
+    console.log('\n--- 8. DUAL-LANE UPI SETTLEMENT & CONCIERGE VERIFICATION ---');
+
+    // 8.1 Gateway Status Telemetry
+    const gwStatus = await request('/api/gateway-status');
+    assert(gwStatus.statusCode === 200 && gwStatus.json && gwStatus.json.paired === true, 'GET /api/gateway-status reports paired Android Gateway');
+    assert(gwStatus.json && gwStatus.json.online === true, 'GET /api/gateway-status reports gateway online status');
+    assert(gwStatus.json && typeof gwStatus.json.device === 'string', 'GET /api/gateway-status reports gateway device identifier');
+
+    // 8.2 Bank SMS Gateway: Outgoing Debit Exclusion
+    const debitSms = await request('/api/sms', {
+      method: 'POST',
+      body: { body: 'A/c *1234 debited by Rs 450.00 on 25-Oct-26. Transfer to Swiggy UPI Ref 112233445566' }
+    });
+    assert(debitSms.statusCode === 200 && debitSms.json.status === 'IGNORED' && debitSms.json.reason === 'debit_transaction', 'POST /api/sms safely ignores outgoing merchant debit SMS notifications');
+
+    // 8.3 Bank SMS Gateway: Genuine Inward Credit Processing
+    const testCreditUtr = '876543210987';
+    const testCreditAmount = 3499;
+    const creditSms = await request('/api/sms', {
+      method: 'POST',
+      body: { body: `A/c *1234 credited by Rs. ${testCreditAmount}.00 on 25-Oct-26 via UPI Ref ${testCreditUtr} - Axis Bank` }
+    });
+    assert(creditSms.statusCode === 200 && creditSms.json.status === 'OK' && creditSms.json.processed === true, 'POST /api/sms parses and records genuine inbound credit SMS');
+    assert(creditSms.json.utr === testCreditUtr && creditSms.json.amount === testCreditAmount, 'POST /api/sms extracts exact UTR and amount from SMS text');
+
+    // 8.4 Real-Time Live Radar Polling with "since" Timestamp
+    const recentSince = new Date(Date.now() - 60000).toISOString();
+    const radarMatch = await request(`/api/upi/check-status?amount=${testCreditAmount}&since=${encodeURIComponent(recentSince)}`);
+    assert(radarMatch.statusCode === 200 && radarMatch.json.found === true && radarMatch.json.credit, 'GET /api/upi/check-status matches live bank credit within recent session window');
+    assert(radarMatch.json.credit.utr === testCreditUtr, 'GET /api/upi/check-status verifies matched UTR matches recorded credit');
+
+    // Radar ignores credits older than "since"
+    const futureSince = new Date(Date.now() + 60000).toISOString();
+    const radarNoMatch = await request(`/api/upi/check-status?amount=${testCreditAmount}&since=${encodeURIComponent(futureSince)}`);
+    assert(radarNoMatch.statusCode === 200 && radarNoMatch.json.found === false, 'GET /api/upi/check-status strictly ignores credits created before session since timestamp');
+
+    // 8.5 Double-Spending & Atomic Claim Barrier
+    const claimOrderA = `TKD-CLAIM-A-${Date.now()}`;
+    const firstClaim = await db.claimBankCredit(testCreditUtr, claimOrderA);
+    assert(firstClaim.success === true && firstClaim.claimed === true, 'db.claimBankCredit atomically locks credit to first acquiring order');
+
+    const claimOrderB = `TKD-CLAIM-B-${Date.now()}`;
+    const secondClaim = await db.claimBankCredit(testCreditUtr, claimOrderB);
+    assert(secondClaim.claimed === false && secondClaim.reason === 'already_claimed', 'db.claimBankCredit blocks double-spending / second order claiming same bank deposit');
+
+    const radarAfterClaim = await request(`/api/upi/check-status?amount=${testCreditAmount}&since=${encodeURIComponent(recentSince)}`);
+    assert(radarAfterClaim.statusCode === 200 && radarAfterClaim.json.found === false, 'GET /api/upi/check-status excludes claimed credits from radar detection');
+
+    // 8.6 Lane 2 Fallback Order: Server-Side Status & Anti-Fraud Barrier
+    const fallbackOrderId = `TKD-FALLBACK-${Date.now()}`;
+    const savedFallback = await db.saveOrder({
+      id: fallbackOrderId,
+      date: new Date().toISOString(),
+      status: 'Waiting for Admin Approval',
+      customer: { fullName: 'Fallback Client', email: 'fallback@tokyodrift.in' },
+      items: [{ id: 'PRD-TEST', title: 'Archival Coat', size: 'L', quantity: 1, price: testCreditAmount }],
+      financials: { grandTotal: testCreditAmount },
+      payment: { method: 'upi', verified: false, reviewRequested: true }
+    });
+    assert(savedFallback.success === true && savedFallback.order.status === 'Waiting for Admin Approval', 'db.saveOrder records unverified Lane 2 order with Waiting for Admin Approval status');
+
+    const trackingData = await db.getTracking(fallbackOrderId);
+    assert(trackingData && trackingData.steps[0].step.includes('Awaiting Bank Clearance') && trackingData.steps[0].completed === false, 'db.getTracking shows honest unverified tracking timeline for unapproved orders');
+
+    // 8.7 Concierge Admin 1-Click Verification & Approval (POST & GET)
+    const unauthApprove = await request(`/api/orders/${fallbackOrderId}/approve-payment`, { method: 'POST' });
+    assert(unauthApprove.statusCode === 403, 'POST /api/orders/:id/approve-payment without admin key is blocked (403 Forbidden)');
+
+    const authApprovePost = await request(`/api/orders/${fallbackOrderId}/approve-payment`, {
+      method: 'POST',
+      headers: { 'x-admin-key': ADMIN_KEY },
+      body: { utr: testCreditUtr }
+    });
+    assert(authApprovePost.statusCode === 200 && authApprovePost.json.success === true, 'POST /api/orders/:id/approve-payment with x-admin-key verifies payment (200 OK)');
+
+    const getApproveOrderId = `TKD-GET-APP-${Date.now()}`;
+    await db.saveOrder({
+      id: getApproveOrderId,
+      date: new Date().toISOString(),
+      status: 'Waiting for Admin Approval',
+      customer: { fullName: 'Get Client', email: 'get@tokyodrift.in' },
+      items: [{ id: 'PRD-TEST', title: 'Shirt', size: 'M', quantity: 1, price: 999 }],
+      financials: { grandTotal: 999 }
+    });
+
+    const authApproveGet = await request(`/api/orders/${getApproveOrderId}/approve-payment?key=rishav@9798886818`);
+    assert(authApproveGet.statusCode === 200 && authApproveGet.data.includes('Approved'), 'GET /api/orders/:id/approve-payment?key=... returns HTML success confirmation');
+
+    // 8.8 Concierge Admin 1-Click Payment Rejection (POST & GET)
+    const rejectOrderId = `TKD-REJ-${Date.now()}`;
+    await db.saveOrder({
+      id: rejectOrderId,
+      date: new Date().toISOString(),
+      status: 'Waiting for Admin Approval',
+      customer: { fullName: 'Reject Client', email: 'reject@tokyodrift.in' },
+      items: [{ id: 'PRD-TEST', title: 'Pants', size: 'S', quantity: 1, price: 999 }],
+      financials: { grandTotal: 999 }
+    });
+
+    const unauthReject = await request(`/api/orders/${rejectOrderId}/reject-payment`, { method: 'POST' });
+    assert(unauthReject.statusCode === 403, 'POST /api/orders/:id/reject-payment without admin key is blocked (403 Forbidden)');
+
+    const authRejectPost = await request(`/api/orders/${rejectOrderId}/reject-payment`, {
+      method: 'POST',
+      headers: { 'x-admin-key': ADMIN_KEY }
+    });
+    assert(authRejectPost.statusCode === 200 && authRejectPost.json.status.includes('Cancelled'), 'POST /api/orders/:id/reject-payment cancels order and marks payment rejected');
+
+    const getRejectOrderId = `TKD-GET-REJ-${Date.now()}`;
+    await db.saveOrder({
+      id: getRejectOrderId,
+      date: new Date().toISOString(),
+      status: 'Waiting for Admin Approval',
+      customer: { fullName: 'Reject Client 2', email: 'reject2@tokyodrift.in' },
+      items: [{ id: 'PRD-TEST', title: 'Tie', size: 'Free', quantity: 1, price: 500 }],
+      financials: { grandTotal: 500 }
+    });
+
+    const authRejectGet = await request(`/api/orders/${getRejectOrderId}/reject-payment?key=rishav@9798886818`);
+    assert(authRejectGet.statusCode === 200 && authRejectGet.data.includes('Rejected'), 'GET /api/orders/:id/reject-payment?key=... returns HTML rejection confirmation');
+
+    // Cleanup test orders
+    await db.deleteOrder(fallbackOrderId);
+    await db.deleteOrder(getApproveOrderId);
+    await db.deleteOrder(rejectOrderId);
+    await db.deleteOrder(getRejectOrderId);
+
   } catch(err) {
     console.error('Integration test failed with error:', err);
     process.exitCode = 1;

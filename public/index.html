@@ -1086,6 +1086,16 @@
       const [newPromoCode, setNewPromoCode] = useState({ code: '', discount: 10, note: '' });
       const [orderStatusFilter, setOrderStatusFilter] = useState('all');
       const [orderSearchQuery, setOrderSearchQuery] = useState('');
+      const [gatewayStatus, setGatewayStatus] = useState({ online: true, device: 'Android Gateway (CPH2617)', secondsAgo: null });
+
+      useEffect(() => {
+        if (adminTab === 'settings') {
+          fetch('/api/gateway-status')
+            .then(r => r.json())
+            .then(d => { if (d) setGatewayStatus(d); })
+            .catch(() => {});
+        }
+      }, [adminTab]);
 
       // --- STOREFRONT UI STATES ---
       const [searchOpen, setSearchOpen] = useState(false);
@@ -1692,6 +1702,7 @@
       const [upiDetectedCredit, setUpiDetectedCredit] = useState(null);
       const [upiFallbackOpen, setUpiFallbackOpen] = useState(false);
       const [upiSecondsElapsed, setUpiSecondsElapsed] = useState(0);
+      const [upiSessionStart, setUpiSessionStart] = useState(() => new Date(Date.now() - 30000).toISOString());
 
       useEffect(() => {
         if (!checkoutOpen) {
@@ -1702,6 +1713,7 @@
           setUpiFallbackOpen(false);
           return;
         }
+        setUpiSessionStart(new Date(Date.now() - 15000).toISOString());
         const interval = setInterval(() => {
           setYoupiTimer(prev => (prev > 0 ? prev - 1 : 300));
         }, 1000);
@@ -1813,7 +1825,8 @@
 
         const radar = setInterval(async () => {
           try {
-            const res = await fetch(`/api/upi/check-status?amount=${grandTotal}`);
+            const sinceParam = encodeURIComponent(upiSessionStart || new Date(Date.now() - 30000).toISOString());
+            const res = await fetch(`/api/upi/check-status?amount=${grandTotal}&since=${sinceParam}`);
             const data = await res.json();
             if (data && data.found && data.credit) {
               setUpiAutoVerified(true);
@@ -1836,7 +1849,7 @@
           clearInterval(timer);
           clearInterval(radar);
         };
-      }, [checkoutOpen, checkoutForm.paymentMethod, upiAutoVerified, grandTotal, settings.enableSound, checkoutErrors.youpiUtr]);
+      }, [checkoutOpen, checkoutForm.paymentMethod, upiAutoVerified, grandTotal, upiSessionStart, settings.enableSound, checkoutErrors.youpiUtr]);
 
       // Bag Actions
       const addToBag = (product, size, color) => {
@@ -2241,7 +2254,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
 
       // 5. Working Checkout Submission
       const handleCheckoutSubmit = async (e) => {
-        e.preventDefault();
+        if (e && e.preventDefault) e.preventDefault();
         const errors = {};
 
         if (!checkoutForm.fullName.trim()) errors.fullName = 'Full legal name is required';
@@ -2393,17 +2406,25 @@ Tokyo Drift garments carry lifetime atelier provenance.
         // Record order in state & SQLite backend
         setOrders(prev => [newOrder, ...prev]);
 
+        let authoritativeOrder = newOrder;
         try {
-          await fetch('/api/orders', {
+          const res = await fetch('/api/orders', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(newOrder)
           });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.order) {
+              authoritativeOrder = data.order;
+              setOrders(prev => prev.map(o => o.id === authoritativeOrder.id ? authoritativeOrder : o));
+            }
+          }
         } catch (e) {}
 
         setTimeout(() => {
           setIsProcessingPayment(false);
-          setCurrentOrder(newOrder);
+          setCurrentOrder(authoritativeOrder);
           setOrderSuccess(true);
           setBag([]);
           setUpiAutoVerified(false);
@@ -4526,6 +4547,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                           <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
                             {[
                               { id: 'all', label: 'All Orders' },
+                              { id: 'Waiting for Admin', label: '⏳ Awaiting Approval' },
                               { id: 'Authorized', label: 'Authorized' },
                               { id: 'Processing', label: 'Processing' },
                               { id: 'Shipped', label: 'Shipped' },
@@ -4597,7 +4619,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                               ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300'
                                               : isCancelled
                                                 ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
-                                                : order.status?.toLowerCase().includes('pending')
+                                                : (order.status?.toLowerCase().includes('pending') || order.status?.toLowerCase().includes('waiting for admin') || order.status?.toLowerCase().includes('awaiting'))
                                                   ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-400/40'
                                                   : 'bg-noir text-white dark:bg-white dark:text-noir'
                                         }`}>
@@ -4633,15 +4655,21 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   </div>
 
                                   {/* Concierge Bank Verification Station */}
-                                  {order.status && (order.status.includes('Pending Concierge') || order.status.includes('Pending Review') || (order.payment?.method === 'upi' && order.status.includes('Pending'))) && (
+                                  {order.status && (
+                                    order.status.includes('Waiting for Admin') || 
+                                    order.status.includes('Admin Approval') || 
+                                    order.status.includes('Pending Concierge') || 
+                                    order.status.includes('Pending Review') || 
+                                    (order.payment?.method === 'upi' && (order.status.includes('Pending') || order.status.includes('Waiting')))
+                                  ) && (
                                     <div className="p-4 bg-amber-500/10 border-2 border-amber-500/40 rounded-lg flex flex-col md:flex-row justify-between md:items-center gap-4 fade-in">
                                       <div className="space-y-1">
                                         <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-bold font-mono text-xs uppercase tracking-wider">
-                                          <span>⚠️</span>
+                                          <span>⏳</span>
                                           <span>DIRECT UPI SETTLEMENT PENDING CONCIERGE CLEARANCE</span>
                                         </div>
                                         <p className="text-xs font-mono text-noir dark:text-white">
-                                          Customer Submitted Reference: <code className="font-bold bg-amber-500/20 px-2 py-0.5 rounded text-amber-800 dark:text-amber-300 font-mono text-xs">{order.payment?.utr || 'N/A'}</code>
+                                          Customer Submitted Reference: <code className="font-bold bg-amber-500/20 px-2 py-0.5 rounded text-amber-800 dark:text-amber-300 font-mono text-xs">{order.payment?.utr || 'Awaiting Admin Ledger Verification'}</code>
                                         </p>
                                         <p className="text-[10px] text-taupe font-mono">
                                           Verify incoming credit of <strong>{formatPrice(order.financials?.grandTotal, order.financials?.currency || currency)}</strong> in Axis Bank / UPI app before approving dispatch.
@@ -4654,8 +4682,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                             try {
                                               const res = await fetch(`/api/orders/${order.id}/approve-payment`, {
                                                 method: 'POST',
-                                                headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'tokyodrift_admin_secret' },
-                                                body: JSON.stringify({ utr: order.payment?.utr || 'VERIFIED' })
+                                                headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'rishav@9798886818' },
+                                                body: JSON.stringify({ utr: order.payment?.utr || 'CONCIERGE_APPROVED' })
                                               });
                                               const d = await res.json();
                                               if (d.success) {
@@ -4677,11 +4705,11 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                               try {
                                                 const res = await fetch(`/api/orders/${order.id}/reject-payment`, {
                                                   method: 'POST',
-                                                  headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'tokyodrift_admin_secret' }
+                                                  headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'rishav@9798886818' }
                                                 });
                                                 const d = await res.json();
                                                 if (d.success) {
-                                                  setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: d.status || 'Cancelled (Invalid Payment Reference)' } : o));
+                                                  setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: d.status || 'Cancelled (Payment Rejected by Concierge)' } : o));
                                                   showToast(`Order ${order.id} payment reference rejected.`);
                                                 }
                                               } catch(e) {
@@ -6362,6 +6390,19 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   onChange={(e) => setSettings({...settings, youpiAutoApproveUtr: e.target.checked})}
                                   className="w-4 h-4 accent-emerald-600"
                                 />
+                              </div>
+
+                              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded text-[11px] font-mono flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className={`w-2 h-2 rounded-full ${gatewayStatus.online ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
+                                  <span className="font-bold text-noir dark:text-white">
+                                    GATEWAY APK: {gatewayStatus.online ? 'ONLINE & SYNCED' : 'STANDBY'}
+                                  </span>
+                                  <span className="text-[10px] text-taupe">({gatewayStatus.device || 'Android Gateway'})</span>
+                                </div>
+                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
+                                  {gatewayStatus.secondsAgo !== null ? `Last ping: ${gatewayStatus.secondsAgo}s ago` : 'Endpoint: /api/gateway'}
+                                </span>
                               </div>
 
                               <div className="p-2.5 bg-canvas dark:bg-[#0B0D13] border border-borderMuted/40 dark:border-borderDark/40 rounded text-[10px] font-mono text-taupe flex flex-wrap justify-between items-center gap-2">
@@ -10046,6 +10087,11 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               <span className="uppercase text-[10px] tracking-wider">Total Order Investment:</span>
                               <span className="text-noir dark:text-white font-bold">{formatPrice(currentOrder.financials.grandTotal, currentOrder.financials.currency || currency)}</span>
                             </div>
+                          </div>
+                        ) : currentOrder?.status?.includes('Waiting for Admin') ? (
+                          <div className="flex justify-between pt-1 text-sm font-semibold text-amber-600 dark:text-amber-400">
+                            <span className="uppercase text-[10px] tracking-wider">Payment Status:</span>
+                            <span className="font-mono">PENDING VERIFICATION · ₹0 Collected ({formatPrice(currentOrder.financials.grandTotal, currentOrder.financials.currency || currency)} Due)</span>
                           </div>
                         ) : (
                           <div className="flex justify-between pt-1 text-sm font-semibold">
