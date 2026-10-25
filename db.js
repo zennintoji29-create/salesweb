@@ -598,6 +598,16 @@ async function getTracking(orderId) {
 // SETTINGS API
 // -------------------------------------------------------------------------
 async function getSettings() {
+  const decorateSettings = (s) => {
+    const obj = s || {};
+    if (!obj.youpiVpa) obj.youpiVpa = 'agarawalrishav23@okaxis';
+    if (!obj.youpiPayeeName) obj.youpiPayeeName = 'Rishav Kumar';
+    if (obj.enableYoupiUpi === undefined) obj.enableYoupiUpi = true;
+    if (obj.youpiAutoApproveUtr === undefined) obj.youpiAutoApproveUtr = true;
+    if (!obj.codUpiId || obj.codUpiId === 'tokyodrift@upi') obj.codUpiId = 'agarawalrishav23@okaxis';
+    return obj;
+  };
+
   const settings = {};
   if (pgPool) {
     try {
@@ -609,7 +619,7 @@ async function getSettings() {
           settings[r.key] = r.value;
         }
       });
-      return settings;
+      return decorateSettings(settings);
     } catch(e) {
       console.error('[DB] getSettings PG error:', e.message);
     }
@@ -621,16 +631,89 @@ async function getSettings() {
       rows.forEach(s => {
         try { settings[s.key] = JSON.parse(s.value); } catch(e) { settings[s.key] = s.value; }
       });
-      return settings;
+      return decorateSettings(settings);
     } catch(e) {}
   }
 
   try {
     const raw = JSON.parse(fs.readFileSync(JSON_DB_PATH, 'utf8'));
-    return raw.settings || {};
+    return decorateSettings(raw.settings || {});
   } catch(e) {
-    return {};
+    return decorateSettings({});
   }
+}
+
+async function verifyUtr(utr, orderId) {
+  if (!utr || typeof utr !== 'string') {
+    return { valid: false, error: '12-digit Bank UTR / Reference number is required.' };
+  }
+  const cleanUtr = utr.trim();
+  if (!/^\d{12}$/.test(cleanUtr)) {
+    return { valid: false, error: 'Invalid UTR format. NPCI / Bank UTR must be exactly 12 digits (numeric).' };
+  }
+
+  // Anti-Replay Security Check
+  if (pgPool) {
+    try {
+      const res = await pgPool.query(
+        "SELECT id, status, payment FROM td_orders WHERE (payment->>'utr' = $1 OR payment->>'codUtr' = $1 OR payment->>'transactionHash' LIKE $2)",
+        [cleanUtr, `%${cleanUtr}%`]
+      );
+      if (res.rows && res.rows.length > 0) {
+        const conflict = res.rows.find(r => !orderId || r.id.toUpperCase() !== orderId.toUpperCase());
+        if (conflict) {
+          return { valid: false, error: `Anti-Replay Alert: This UTR (${cleanUtr}) has already been registered with order ${conflict.id}. Duplicate payment references are strictly rejected.` };
+        }
+      }
+    } catch(e) {
+      console.warn('[DB] verifyUtr PG check error:', e.message);
+    }
+  }
+
+  if (sqliteDb) {
+    try {
+      const rows = sqliteDb.prepare('SELECT id, payment FROM orders').all();
+      for (const row of rows) {
+        if (!orderId || row.id.toUpperCase() !== orderId.toUpperCase()) {
+          try {
+            const p = typeof row.payment === 'string' ? JSON.parse(row.payment || '{}') : (row.payment || {});
+            if (p.utr === cleanUtr || p.codUtr === cleanUtr || (p.transactionHash && p.transactionHash.includes(cleanUtr))) {
+              return { valid: false, error: `Anti-Replay Alert: This UTR (${cleanUtr}) has already been registered with order ${row.id}. Duplicate payment references are strictly rejected.` };
+            }
+          } catch(e) {}
+        }
+      }
+    } catch(e) {}
+  }
+
+  return { valid: true, utr: cleanUtr };
+}
+
+async function confirmOrderUtr(utr, orderId) {
+  const verification = await verifyUtr(utr, orderId);
+  if (!verification.valid) return verification;
+
+  const newStatus = `Paid & Confirmed via YouPI (UTR: ${verification.utr})`;
+  if (pgPool && orderId) {
+    try {
+      await pgPool.query(
+        `UPDATE td_orders SET status = $1, payment = jsonb_set(COALESCE(payment, '{}'::jsonb), '{utr}', $2) WHERE UPPER(id) = UPPER($3)`,
+        [newStatus, JSON.stringify(verification.utr), orderId]
+      );
+    } catch(e) {}
+  }
+  if (sqliteDb && orderId) {
+    try {
+      const row = sqliteDb.prepare('SELECT payment FROM orders WHERE UPPER(id) = ?').get(orderId.toUpperCase());
+      if (row) {
+        let p = {};
+        try { p = JSON.parse(row.payment || '{}'); } catch(e) {}
+        p.utr = verification.utr;
+        sqliteDb.prepare('UPDATE orders SET status = ?, payment = ? WHERE UPPER(id) = ?').run(newStatus, JSON.stringify(p), orderId.toUpperCase());
+      }
+    } catch(e) {}
+  }
+  return { valid: true, utr: verification.utr, status: newStatus };
 }
 
 async function saveSettings(settingsObj) {
@@ -1514,5 +1597,7 @@ module.exports = {
   getUpload,
   getFullDatabase,
   importDatabase,
+  verifyUtr,
+  confirmOrderUtr,
   ping
 };

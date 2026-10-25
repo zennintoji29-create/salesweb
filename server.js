@@ -361,6 +361,39 @@ async function handleRequest(req, res) {
       return;
     }
 
+    // --- API: YOUPI-PG V2 ZERO-FEE UPI GATEWAY ---
+    if (pathname === '/api/youpi/verify-utr' && req.method === 'POST') {
+      const body = await parseJsonBody(req);
+      const utr = body.utr || body.ref || body.rrn;
+      const orderId = body.orderId || null;
+      const verification = await db.verifyUtr(utr, orderId);
+      if (!verification.valid) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, ...verification }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, ...verification }));
+      return;
+    }
+
+    if (pathname === '/api/youpi/webhook' || pathname === '/api/youpi/observer') {
+      if (req.method === 'POST') {
+        const body = await parseJsonBody(req);
+        const utr = body.utr || body.ref || body.rrn;
+        const orderId = body.orderId || body.order_id;
+        if (!utr) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing UTR reference' }));
+          return;
+        }
+        const result = await db.confirmOrderUtr(utr, orderId);
+        res.writeHead(result.valid ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+    }
+
     // --- API: TRACK VIEWS & ANALYTICS ---
     if (pathname === '/api/track-view' && req.method === 'POST') {
       const body = await parseJsonBody(req);

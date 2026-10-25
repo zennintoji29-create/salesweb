@@ -253,6 +253,51 @@ async function runAllTests() {
     const rewriteUpload = await request('/api?upload=product-1792928857466.jpg');
     assert(rewriteUpload.statusCode === 200 && rewriteUpload.headers['content-type'] === 'image/jpeg', 'GET /api?upload=:filename serves binary image through Vercel rewrite');
 
+    // YouPI-PG V2 Zero-Fee UPI Gateway Verification
+    console.log('\n--- 7. YOUPI-PG V2 ZERO-FEE UPI GATEWAY ---');
+    const invalidUtrRes = await request('/api/youpi/verify-utr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { utr: '123' }
+    });
+    assert(invalidUtrRes.statusCode === 400 && invalidUtrRes.json.valid === false, 'POST /api/youpi/verify-utr rejects non-12-digit UTR (400)');
+
+    const testUtr = '489271649201';
+    const validUtrRes = await request('/api/youpi/verify-utr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { utr: testUtr }
+    });
+    assert(validUtrRes.statusCode === 200 && validUtrRes.json.valid === true, 'POST /api/youpi/verify-utr approves valid 12-digit bank UTR (200 OK)');
+
+    // Anti-replay test
+    const youpiTestOrderId = 'TKD-YOUPI-TEST';
+    await db.saveOrder({
+      id: youpiTestOrderId,
+      date: new Date().toISOString(),
+      status: 'Paid via YouPI',
+      payment: { method: 'upi', gateway: 'youpi-pg', utr: testUtr, vpa: 'agarawalrishav23@okaxis', payeeName: 'Rishav Kumar' },
+      customer: { fullName: 'Test Client', email: 'test@tokyodrift.in' },
+      financials: { grandTotal: 4999 }
+    });
+
+    const replayUtrRes = await request('/api/youpi/verify-utr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { utr: testUtr, orderId: 'TKD-ANOTHER-ORDER' }
+    });
+    assert(replayUtrRes.statusCode === 400 && replayUtrRes.json.valid === false && replayUtrRes.json.error.includes('Anti-Replay'), 'POST /api/youpi/verify-utr enforces Anti-Replay security barrier on duplicate UTR');
+
+    // Webhook observer test
+    const observerRes = await request('/api/youpi/observer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { utr: '592817349102', orderId: youpiTestOrderId, amount: 4999 }
+    });
+    assert(observerRes.statusCode === 200 && observerRes.json.valid === true, 'POST /api/youpi/observer confirms order via bank observer webhook');
+
+    await db.deleteOrder(youpiTestOrderId);
+
   } catch(err) {
     console.error('Integration test failed with error:', err);
     process.exitCode = 1;
