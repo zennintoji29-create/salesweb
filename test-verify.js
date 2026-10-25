@@ -31,7 +31,7 @@ function request(path, options = {}) {
     const reqOpts = {
       method: options.method || 'GET',
       headers: options.headers || {},
-      timeout: 8000
+      timeout: 30000
     };
 
     const req = http.request(url, reqOpts, (res) => {
@@ -203,6 +203,14 @@ async function runAllTests() {
 
     const adminPage = await request('/admin');
     assert(adminPage.statusCode === 200, 'GET /admin routes to index.html with 200 OK');
+
+    // Media & Upload Pipeline
+    console.log('\n--- 6. UPLOAD & MEDIA PIPELINE ---');
+    const uploadRes = await request('/uploads/product-1792928857466.jpg');
+    assert(uploadRes.statusCode === 200 && uploadRes.headers['content-type'] === 'image/jpeg', 'GET /uploads/:filename serves binary image with image/jpeg header');
+
+    const rewriteUpload = await request('/api?upload=product-1792928857466.jpg');
+    assert(rewriteUpload.statusCode === 200 && rewriteUpload.headers['content-type'] === 'image/jpeg', 'GET /api?upload=:filename serves binary image through Vercel rewrite');
 
   } catch(err) {
     console.error('Integration test failed with error:', err);

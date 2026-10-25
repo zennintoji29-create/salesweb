@@ -64,8 +64,8 @@ if (!global._tdPgPool && pgHost && pgPassword) {
       ssl: { rejectUnauthorized: false },
       max: maxPool,
       idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 5000,
-      statement_timeout: 6000
+      connectionTimeoutMillis: 15000,
+      statement_timeout: 15000
     });
     global._tdPgPool.on('error', (err) => {
       console.warn('[Tokyo Drift DB] Pool idle client dropped or reset:', err.message);
@@ -1394,16 +1394,20 @@ async function getFullDatabase({ isAdmin = false } = {}) {
     };
   }
 
-  // Full administrative database extraction
-  const [products, orders, settings, categories, reviews, subscribers, alerts, appointments, customers, views] = await Promise.all([
+  // Full administrative database extraction in small parallel batches to balance connection pool and network roundtrips
+  const [products, orders, settings, categories] = await Promise.all([
     getProducts(),
     getOrders(),
     getSettings(),
-    getCategories(),
+    getCategories()
+  ]);
+  const [reviews, subscribers, alerts, appointments] = await Promise.all([
     getReviews(),
     getSubscribers(),
     getRestockAlerts(),
-    getAppointments(),
+    getAppointments()
+  ]);
+  const [customers, views] = await Promise.all([
     getAllCustomers(),
     getViews()
   ]);

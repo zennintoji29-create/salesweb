@@ -1820,24 +1820,52 @@
         }
       };
 
-      const handleImageUpload = (e, field, targetState = 'product') => {
+      const optimizePhotoFile = (file) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          const objUrl = URL.createObjectURL(file);
+          img.onload = () => {
+            URL.revokeObjectURL(objUrl);
+            const maxDim = 1600;
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.88));
+          };
+          img.onerror = () => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.readAsDataURL(file);
+          };
+          img.src = objUrl;
+        });
+      };
+
+      const handleImageUpload = async (e, field, targetState = 'product') => {
         const file = e.target.files && e.target.files[0];
         if (file) {
-          if (file.size > 20 * 1024 * 1024) {
-            showToast('Photograph exceeds 20MB size limit. Please choose a lighter file.');
-            return;
-          }
           showToast('Processing photograph...');
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-            const dataUrl = reader.result;
+          try {
+            const dataUrl = await optimizePhotoFile(file);
             // Set immediately for immediate UI response
             if (targetState === 'product') {
               setProductForm(prev => ({ ...prev, [field]: dataUrl }));
             } else if (targetState === 'settings') {
               setSettings(prev => ({ ...prev, [field]: dataUrl }));
             }
-            // Attempt background upload to disk for clean static URL
+            // Attempt background upload to cloud archive for clean URL
             try {
               const res = await fetch('/api/upload', {
                 method: 'POST',
@@ -1856,8 +1884,9 @@
               console.warn('Saved image locally as dataUrl', err);
             }
             showToast('Photograph loaded successfully.');
-          };
-          reader.readAsDataURL(file);
+          } catch(err) {
+            showToast('Failed to process image');
+          }
         }
       };
 

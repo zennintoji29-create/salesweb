@@ -151,6 +151,71 @@ async function handleRequest(req, res) {
   }
   const isAdmin = isAdminRequest(req, url);
 
+  // --- CLOUD UPLOAD SERVING (/uploads/*, /api/uploads/*, or ?upload=*) ---
+  const uploadParam = url.searchParams.get('upload') || url.searchParams.get('file');
+  const matchedPath = (req.headers['x-matched-path'] || req.headers['x-forwarded-uri'] || '').split('?')[0];
+  const isUpload = pathname.startsWith('/uploads/') || 
+                   pathname.startsWith('/api/uploads/') || 
+                   matchedPath.startsWith('/uploads/') || 
+                   Boolean(uploadParam);
+
+  if (isUpload && req.method === 'GET') {
+    let rawUploadName = uploadParam;
+    if (!rawUploadName) {
+      const pathToUse = matchedPath.startsWith('/uploads/') ? matchedPath : pathname;
+      rawUploadName = pathToUse.replace(/^\/(api\/)?uploads\//, '');
+    }
+    const uploadName = path.basename(rawUploadName || '');
+
+    if (uploadName && !uploadName.startsWith('.')) {
+      let localUploadPath = path.join(__dirname, 'uploads', uploadName);
+      if (!fs.existsSync(localUploadPath)) {
+        localUploadPath = path.join('/tmp', 'uploads', uploadName);
+      }
+
+      if (fs.existsSync(localUploadPath)) {
+        try {
+          const fileBuf = fs.readFileSync(localUploadPath);
+          const ext = path.extname(uploadName).toLowerCase();
+          res.writeHead(200, {
+            'Content-Type': MIME_TYPES[ext] || 'image/jpeg',
+            'Content-Length': fileBuf.length,
+            'Cache-Control': 'public, max-age=31536000, immutable'
+          });
+          res.end(fileBuf);
+          return;
+        } catch(e) {}
+      }
+
+      // Query PostgreSQL cloud database
+      try {
+        const dbUpload = await db.getUpload(uploadName);
+        if (dbUpload && dbUpload.data) {
+          const imgBuffer = Buffer.from(dbUpload.data, 'base64');
+          try {
+            const tmpDir = path.join('/tmp', 'uploads');
+            if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, uploadName), imgBuffer);
+          } catch(e) {}
+          res.writeHead(200, {
+            'Content-Type': dbUpload.mime || 'image/jpeg',
+            'Content-Length': imgBuffer.length,
+            'Cache-Control': 'public, max-age=31536000, immutable'
+          });
+          res.end(imgBuffer);
+          return;
+        }
+      } catch(err) {
+        console.warn('[Tokyo Drift Upload Serve Notice]', err.message);
+      }
+
+      // If not found in disk or database, return 404 (do not leak or fallback to index.html)
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Upload image not found' }));
+      return;
+    }
+  }
+
   try {
     // --- API: HEALTH CHECK & SRE METRICS ---
     if (pathname === '/api/health' && req.method === 'GET') {

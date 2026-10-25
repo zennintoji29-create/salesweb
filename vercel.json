@@ -1,7 +1,8 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/uploads/(.*)", "destination": "/api" },
+    { "source": "/uploads/(.*)", "destination": "/api?upload=$1" },
+    { "source": "/api/uploads/(.*)", "destination": "/api?upload=$1" },
     { "source": "/admin", "destination": "/index.html" },
     { "source": "/((?!api|uploads).*)", "destination": "/index.html" }
   ],
