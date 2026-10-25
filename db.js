@@ -228,6 +228,15 @@ async function init() {
           created_at TIMESTAMPTZ DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS td_bank_credits (
+          utr TEXT PRIMARY KEY,
+          amount NUMERIC(10,2) NOT NULL,
+          sender TEXT,
+          claimed_by_order TEXT,
+          raw TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
         -- Ensure modern columns
         ALTER TABLE td_page_views ADD COLUMN IF NOT EXISTS ip TEXT;
         ALTER TABLE td_page_views ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
@@ -268,6 +277,7 @@ async function init() {
         CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT, email TEXT UNIQUE, passwordHash TEXT, phone TEXT, address TEXT, city TEXT, postalCode TEXT, country TEXT, created_at TEXT);
         CREATE TABLE IF NOT EXISTS customer_sessions (token TEXT PRIMARY KEY, customerId TEXT, created_at TEXT, expires_at TEXT);
         CREATE TABLE IF NOT EXISTS page_views (id TEXT PRIMARY KEY, path TEXT, referrer TEXT, device TEXT, ip TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS bank_credits (utr TEXT PRIMARY KEY, amount REAL, sender TEXT, claimed_by_order TEXT, raw TEXT, created_at TEXT);
       `);
     } catch(e) {}
   }
@@ -643,6 +653,80 @@ async function getSettings() {
   }
 }
 
+async function recordBankCredit({ utr, amount, sender, raw }) {
+  if (!utr) return { success: false };
+  const cleanUtr = String(utr).trim();
+  const numAmount = Number(amount) || 0;
+  if (pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO td_bank_credits (utr, amount, sender, raw, created_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (utr) DO UPDATE SET amount = EXCLUDED.amount, raw = EXCLUDED.raw`,
+        [cleanUtr, numAmount, sender || '', raw || '']
+      );
+      return { success: true, utr: cleanUtr, amount: numAmount };
+    } catch(e) {
+      console.warn('[DB] recordBankCredit PG error:', e.message);
+    }
+  }
+  if (sqliteDb) {
+    try {
+      sqliteDb.prepare(`INSERT OR REPLACE INTO bank_credits (utr, amount, sender, claimed_by_order, raw, created_at) VALUES (?, ?, ?, NULL, ?, ?)`).run(cleanUtr, numAmount, sender || '', raw || '', new Date().toISOString());
+      return { success: true, utr: cleanUtr, amount: numAmount };
+    } catch(e) {}
+  }
+  return { success: true, utr: cleanUtr, amount: numAmount };
+}
+
+async function checkBankCredit({ amount, utr }) {
+  const numAmount = Number(amount);
+  if (pgPool) {
+    try {
+      if (utr) {
+        const res = await pgPool.query('SELECT * FROM td_bank_credits WHERE utr = $1', [utr.trim()]);
+        if (res.rows && res.rows.length > 0) return { found: true, credit: res.rows[0] };
+      }
+      if (numAmount > 0) {
+        const res = await pgPool.query(
+          "SELECT * FROM td_bank_credits WHERE amount = $1 AND claimed_by_order IS NULL AND created_at >= NOW() - INTERVAL '30 minutes' ORDER BY created_at DESC LIMIT 1",
+          [numAmount]
+        );
+        if (res.rows && res.rows.length > 0) return { found: true, credit: res.rows[0] };
+      }
+    } catch(e) {
+      console.warn('[DB] checkBankCredit PG error:', e.message);
+    }
+  }
+  if (sqliteDb) {
+    try {
+      if (utr) {
+        const row = sqliteDb.prepare('SELECT * FROM bank_credits WHERE utr = ?').get(utr.trim());
+        if (row) return { found: true, credit: row };
+      }
+      if (numAmount > 0) {
+        const row = sqliteDb.prepare("SELECT * FROM bank_credits WHERE amount = ? AND claimed_by_order IS NULL ORDER BY created_at DESC LIMIT 1").get(numAmount);
+        if (row) return { found: true, credit: row };
+      }
+    } catch(e) {}
+  }
+  return { found: false };
+}
+
+async function claimBankCredit(utr, orderId) {
+  if (!utr || !orderId) return;
+  if (pgPool) {
+    try {
+      await pgPool.query('UPDATE td_bank_credits SET claimed_by_order = $1 WHERE utr = $2', [orderId, utr.trim()]);
+    } catch(e) {}
+  }
+  if (sqliteDb) {
+    try {
+      sqliteDb.prepare('UPDATE bank_credits SET claimed_by_order = ? WHERE utr = ?').run(orderId, utr.trim());
+    } catch(e) {}
+  }
+}
+
 async function verifyUtr(utr, orderId) {
   if (!utr || typeof utr !== 'string') {
     return { valid: false, error: '12-digit Bank UTR / Reference number is required.' };
@@ -686,14 +770,30 @@ async function verifyUtr(utr, orderId) {
     } catch(e) {}
   }
 
-  return { valid: true, utr: cleanUtr };
+  // Check if real bank credit notification has confirmed this UTR
+  const bankMatch = await checkBankCredit({ utr: cleanUtr });
+  const isAutoVerified = bankMatch && bankMatch.found;
+
+  return { 
+    valid: true, 
+    utr: cleanUtr, 
+    autoVerified: isAutoVerified,
+    pendingReview: !isAutoVerified 
+  };
 }
 
 async function confirmOrderUtr(utr, orderId) {
   const verification = await verifyUtr(utr, orderId);
   if (!verification.valid) return verification;
 
-  const newStatus = `Paid & Confirmed via YouPI (UTR: ${verification.utr})`;
+  const newStatus = verification.autoVerified 
+    ? `Paid & Verified via UPI (Ref: ${verification.utr})`
+    : `Payment Submitted (Pending Concierge Bank Verification · Ref: ${verification.utr})`;
+
+  if (verification.autoVerified && orderId) {
+    await claimBankCredit(verification.utr, orderId);
+  }
+
   if (pgPool && orderId) {
     try {
       await pgPool.query(
@@ -713,7 +813,7 @@ async function confirmOrderUtr(utr, orderId) {
       }
     } catch(e) {}
   }
-  return { valid: true, utr: verification.utr, status: newStatus };
+  return { valid: true, utr: verification.utr, status: newStatus, autoVerified: verification.autoVerified };
 }
 
 async function saveSettings(settingsObj) {
@@ -1599,5 +1699,8 @@ module.exports = {
   importDatabase,
   verifyUtr,
   confirmOrderUtr,
+  recordBankCredit,
+  checkBankCredit,
+  claimBankCredit,
   ping
 };

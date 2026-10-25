@@ -1684,14 +1684,22 @@
       const [codPhoneVerified, setCodPhoneVerified] = useState(false);
       const [agreeExchangePolicy, setAgreeExchangePolicy] = useState(true);
 
-      // YouPI-PG V2 Native Zero-Fee UPI States
+      // Direct Instant UPI Settlement & Automation States
       const [youpiCopied, setYoupiCopied] = useState(false);
       const [youpiHelpOpen, setYoupiHelpOpen] = useState(false);
       const [youpiTimer, setYoupiTimer] = useState(300);
+      const [upiAutoVerified, setUpiAutoVerified] = useState(false);
+      const [upiDetectedCredit, setUpiDetectedCredit] = useState(null);
+      const [upiFallbackOpen, setUpiFallbackOpen] = useState(false);
+      const [upiSecondsElapsed, setUpiSecondsElapsed] = useState(0);
 
       useEffect(() => {
         if (!checkoutOpen) {
           setYoupiTimer(300);
+          setUpiSecondsElapsed(0);
+          setUpiAutoVerified(false);
+          setUpiDetectedCredit(null);
+          setUpiFallbackOpen(false);
           return;
         }
         const interval = setInterval(() => {
@@ -1792,6 +1800,43 @@
       const bagItemCount = useMemo(() => {
         return bag.reduce((sum, item) => sum + item.quantity, 0);
       }, [bag]);
+
+      // Real-time Automated UPI Bank Credit Radar
+      useEffect(() => {
+        if (!checkoutOpen || checkoutForm.paymentMethod !== 'upi' || upiAutoVerified) {
+          return;
+        }
+
+        const timer = setInterval(() => {
+          setUpiSecondsElapsed(prev => prev + 1);
+        }, 1000);
+
+        const radar = setInterval(async () => {
+          try {
+            const res = await fetch(`/api/upi/check-status?amount=${grandTotal}`);
+            const data = await res.json();
+            if (data && data.found && data.credit) {
+              setUpiAutoVerified(true);
+              setUpiDetectedCredit(data.credit);
+              setCheckoutForm(prev => ({
+                ...prev,
+                youpiUtr: data.credit.utr,
+                upiId: data.credit.utr
+              }));
+              if (checkoutErrors.youpiUtr) {
+                setCheckoutErrors(prev => ({ ...prev, youpiUtr: null, upiId: null }));
+              }
+              playHapticTone(950, 0.08, settings.enableSound);
+              showToast(`✓ Bank Settlement Detected: ₹${data.credit.amount} (Ref: ${data.credit.utr})`);
+            }
+          } catch(e) {}
+        }, 2500);
+
+        return () => {
+          clearInterval(timer);
+          clearInterval(radar);
+        };
+      }, [checkoutOpen, checkoutForm.paymentMethod, upiAutoVerified, grandTotal, settings.enableSound, checkoutErrors.youpiUtr]);
 
       // Bag Actions
       const addToBag = (product, size, color) => {
@@ -2245,24 +2290,30 @@ Tokyo Drift garments carry lifetime atelier provenance.
         const orderId = 'TKD-' + Math.floor(100000 + Math.random() * 900000);
         const trackingNum = 'TKD-TRK-' + Math.floor(10000000 + Math.random() * 90000000);
 
-        // Server-side verification for YouPI UTR Anti-Replay
+        // Server-side verification for Direct UPI Settlement Anti-Replay
         const youpiUtrVal = (checkoutForm.youpiUtr || checkoutForm.upiId || '').trim();
+        let upiIsAutoVerified = upiAutoVerified;
         if (checkoutForm.paymentMethod === 'upi') {
-          try {
-            const vRes = await fetch('/api/youpi/verify-utr', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ utr: youpiUtrVal, orderId })
-            });
-            const vData = await vRes.json();
-            if (!vRes.ok || !vData.valid) {
-              setCheckoutErrors({ youpiUtr: vData.error || 'UTR verification failed. Please check your bank receipt.' });
-              setIsProcessingPayment(false);
-              playHapticTone(300, 0.05, settings.enableSound);
-              return;
+          if (!upiIsAutoVerified) {
+            try {
+              const vRes = await fetch('/api/upi/verify-utr', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ utr: youpiUtrVal, orderId, amount: grandTotal })
+              });
+              const vData = await vRes.json();
+              if (!vRes.ok || !vData.valid) {
+                setCheckoutErrors({ youpiUtr: vData.error || 'UTR verification failed. Please check your bank receipt.' });
+                setIsProcessingPayment(false);
+                playHapticTone(300, 0.05, settings.enableSound);
+                return;
+              }
+              if (vData.autoVerified) {
+                upiIsAutoVerified = true;
+              }
+            } catch(err) {
+              console.warn('[UPI Verify Warning]', err);
             }
-          } catch(err) {
-            console.warn('[YouPI Verify Warning]', err);
           }
         }
 
@@ -2274,7 +2325,9 @@ Tokyo Drift garments carry lifetime atelier provenance.
                 ? 'COD Confirmed (Advance Shipping Received · Handover Balance Pending)' 
                 : 'COD Confirmed (Full Amount Payable on Delivery)')
             : (checkoutForm.paymentMethod === 'upi'
-                ? `Paid & Confirmed via YouPI (UTR: ${youpiUtrVal})`
+                ? (upiIsAutoVerified
+                    ? `Paid & Verified via UPI (Ref: ${youpiUtrVal})`
+                    : `Payment Submitted (Pending Concierge Bank Verification · Ref: ${youpiUtrVal})`)
                 : 'Authorized & Transmitted to Atelier'),
           trackingNumber: trackingNum,
           carrier: 'Yamato Transport / DHL Express Global Priority',
@@ -2312,14 +2365,18 @@ Tokyo Drift garments carry lifetime atelier provenance.
           },
           payment: {
             method: checkoutForm.paymentMethod,
-            gateway: checkoutForm.paymentMethod === 'upi' ? 'youpi-pg-v2' : (checkoutForm.paymentMethod === 'card' ? 'card-gateway' : 'cash-on-delivery'),
+            gateway: checkoutForm.paymentMethod === 'upi' ? 'direct-upi-settlement' : (checkoutForm.paymentMethod === 'card' ? 'card-gateway' : 'cash-on-delivery'),
             utr: checkoutForm.paymentMethod === 'upi' ? youpiUtrVal : (checkoutForm.codUtr || null),
             vpa: checkoutForm.paymentMethod === 'upi' ? (settings.youpiVpa || 'agarawalrishav23@okaxis') : null,
             payeeName: checkoutForm.paymentMethod === 'upi' ? (settings.youpiPayeeName || 'Rishav Kumar') : null,
+            autoVerified: upiIsAutoVerified,
+            pendingReview: checkoutForm.paymentMethod === 'upi' && !upiIsAutoVerified,
             label: checkoutForm.paymentMethod === 'card' 
               ? `Credit / Debit Card (${cardBrand})`
               : checkoutForm.paymentMethod === 'upi'
-                ? `YouPI Instant UPI · UTR: ${youpiUtrVal} (${settings.youpiVpa || 'agarawalrishav23@okaxis'})`
+                ? (upiIsAutoVerified
+                    ? `Direct Instant UPI · Ref: ${youpiUtrVal} (${settings.youpiVpa || 'agarawalrishav23@okaxis'})`
+                    : `Direct UPI (Concierge Verification Pending) · Ref: ${youpiUtrVal}`)
                 : (settings.enableCodAdvanceShipping !== false 
                     ? `Cash on Delivery (Advance Shipping ₹${shippingFee} Pre-Confirmed + ₹${settings.codHandlingFee || 50} Handling)` 
                     : 'Cash on Delivery (COD)'),
@@ -2336,7 +2393,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
             transactionHash: checkoutForm.paymentMethod === 'card'
               ? 'AUTH_' + Math.random().toString(36).substring(2, 12).toUpperCase()
               : checkoutForm.paymentMethod === 'upi'
-                ? 'YOUPI_UTR_' + youpiUtrVal
+                ? 'SETTLEMENT_REF_' + youpiUtrVal
                 : (checkoutForm.codUtr 
                     ? `COD_ADV_${checkoutForm.codUtr.toUpperCase()}`
                     : `COD_ADV_REF_${Math.floor(100000000000 + Math.random() * 900000000000)}`)
@@ -2376,6 +2433,10 @@ Tokyo Drift garments carry lifetime atelier provenance.
           setCurrentOrder(newOrder);
           setOrderSuccess(true);
           setBag([]);
+          setUpiAutoVerified(false);
+          setUpiDetectedCredit(null);
+          setUpiFallbackOpen(false);
+          setUpiSecondsElapsed(0);
           playHapticTone(1050, 0.08, settings.enableSound);
         }, 1200);
       };
@@ -4563,7 +4624,9 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                               ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300'
                                               : isCancelled
                                                 ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
-                                                : 'bg-noir text-white dark:bg-white dark:text-noir'
+                                                : order.status?.toLowerCase().includes('pending')
+                                                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-400/40'
+                                                  : 'bg-noir text-white dark:bg-white dark:text-noir'
                                         }`}>
                                           {order.status}
                                         </span>
@@ -4595,6 +4658,71 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                       )}
                                     </div>
                                   </div>
+
+                                  {/* Concierge Bank Verification Station */}
+                                  {order.status && (order.status.includes('Pending Concierge') || order.status.includes('Pending Review') || (order.payment?.method === 'upi' && order.status.includes('Pending'))) && (
+                                    <div className="p-4 bg-amber-500/10 border-2 border-amber-500/40 rounded-lg flex flex-col md:flex-row justify-between md:items-center gap-4 fade-in">
+                                      <div className="space-y-1">
+                                        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-bold font-mono text-xs uppercase tracking-wider">
+                                          <span>⚠️</span>
+                                          <span>DIRECT UPI SETTLEMENT PENDING CONCIERGE CLEARANCE</span>
+                                        </div>
+                                        <p className="text-xs font-mono text-noir dark:text-white">
+                                          Customer Submitted Reference: <code className="font-bold bg-amber-500/20 px-2 py-0.5 rounded text-amber-800 dark:text-amber-300 font-mono text-xs">{order.payment?.utr || 'N/A'}</code>
+                                        </p>
+                                        <p className="text-[10px] text-taupe font-mono">
+                                          Verify incoming credit of <strong>{formatPrice(order.financials?.grandTotal, order.financials?.currency || currency)}</strong> in Axis Bank / UPI app before approving dispatch.
+                                        </p>
+                                      </div>
+                                      <div className="flex items-center gap-2 flex-shrink-0">
+                                        <button
+                                          onClick={async () => {
+                                            playHapticTone(800, 0.03, settings.enableSound);
+                                            try {
+                                              const res = await fetch(`/api/orders/${order.id}/approve-payment`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'tokyodrift_admin_secret' },
+                                                body: JSON.stringify({ utr: order.payment?.utr || 'VERIFIED' })
+                                              });
+                                              const d = await res.json();
+                                              if (d.success) {
+                                                setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: d.status || 'Authorized' } : o));
+                                                showToast(`✓ Order ${order.id} payment verified and approved.`);
+                                              }
+                                            } catch(e) {
+                                              showToast('Approval request failed.');
+                                            }
+                                          }}
+                                          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-[10px] uppercase font-bold rounded btn-tactile flex items-center gap-1.5 shadow-sm"
+                                        >
+                                          <span>✓ Verify & Approve</span>
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            if (confirm(`Reject payment reference for order ${order.id}?`)) {
+                                              playHapticTone(400, 0.03, settings.enableSound);
+                                              try {
+                                                const res = await fetch(`/api/orders/${order.id}/reject-payment`, {
+                                                  method: 'POST',
+                                                  headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'tokyodrift_admin_secret' }
+                                                });
+                                                const d = await res.json();
+                                                if (d.success) {
+                                                  setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: d.status || 'Cancelled (Invalid Payment Reference)' } : o));
+                                                  showToast(`Order ${order.id} payment reference rejected.`);
+                                                }
+                                              } catch(e) {
+                                                showToast('Rejection request failed.');
+                                              }
+                                            }
+                                          }}
+                                          className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white font-mono text-[10px] uppercase font-bold rounded btn-tactile flex items-center gap-1.5 shadow-sm"
+                                        >
+                                          <span>✕ Reject</span>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
 
                                   <div className="grid grid-cols-1 md:grid-cols-12 gap-8 text-xs">
                                     <div className="md:col-span-5 space-y-2 text-taupe">
@@ -6193,21 +6321,21 @@ Tokyo Drift garments carry lifetime atelier provenance.
                           />
                         </div>
 
-                        {/* 00. YOUPI-PG V2 ZERO-FEE UPI GATEWAY */}
+                        {/* 00. DIRECT INSTANT UPI GATEWAY */}
                         <div className="p-5 border-2 border-emerald-500/40 bg-emerald-50/20 dark:bg-emerald-950/20 rounded-lg space-y-4">
                           <div className="flex items-center justify-between pb-3 border-b border-borderMuted/60 dark:border-borderDark/60">
                             <div>
                               <div className="flex items-center gap-2">
                                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
                                 <h4 className="text-xs font-bold uppercase tracking-wider text-noir dark:text-white font-mono flex items-center gap-2">
-                                  <span>YouPI-PG V2 Zero-Fee UPI Gateway</span>
+                                  <span>Direct Instant UPI Gateway (Axis Bank / NPCI)</span>
                                   <span className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold">
                                     0% TRANSACTION FEES
                                   </span>
                                 </h4>
                               </div>
                               <p className="text-[11px] text-taupe mt-0.5">
-                                Native bank settlement via NPCI deep link. Dynamic QR with locked order amounts and Anti-Replay UTR protection.
+                                Direct bank settlement via NPCI deep link. Dynamic QR with locked order amounts and Anti-Replay UTR protection.
                               </p>
                             </div>
                             <input
@@ -6252,7 +6380,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
 
                               <div className="flex items-center justify-between p-3 bg-canvas dark:bg-[#0B0D13] border border-borderMuted/60 dark:border-borderDark/60 rounded">
                                 <div>
-                                  <p className="text-xs font-mono font-bold text-noir dark:text-white">Auto-Approve Valid 12-Digit Bank UTR</p>
+                                  <p className="text-xs font-mono font-bold text-noir dark:text-white">Auto-Reconcile Bank Credits</p>
                                   <p className="text-[10px] text-taupe">Pre-verifies UTR uniqueness and prevents replay duplication across orders.</p>
                                 </div>
                                 <input
@@ -6264,7 +6392,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               </div>
 
                               <div className="p-2.5 bg-canvas dark:bg-[#0B0D13] border border-borderMuted/40 dark:border-borderDark/40 rounded text-[10px] font-mono text-taupe flex flex-wrap justify-between items-center gap-2">
-                                <span>Active Webhook Observer: <code>/api/youpi/observer</code></span>
+                                <span>Radar Polling Engine: <code>/api/upi/check-status</code></span>
                                 <span className="text-emerald-600 dark:text-emerald-400 font-bold">Anti-Replay Filter: ACTIVE ✓</span>
                               </div>
                             </div>
@@ -9871,6 +9999,18 @@ Tokyo Drift garments carry lifetime atelier provenance.
                         </p>
                       </div>
 
+                      {currentOrder.status && currentOrder.status.includes('Pending Concierge') && (
+                        <div className="p-4 bg-amber-500/10 border-2 border-amber-500/30 rounded-lg text-left space-y-2 font-mono text-xs">
+                          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-bold uppercase tracking-wider text-[11px]">
+                            <span>⏳</span>
+                            <span>AWAITING CONCIERGE SETTLEMENT CLEARANCE</span>
+                          </div>
+                          <p className="text-[11px] text-taupe dark:text-gray-300 leading-relaxed">
+                            Your payment reference (<strong className="text-noir dark:text-white">Ref: {currentOrder.payment?.utr || 'Under Review'}</strong>) has been queued for bank ledger verification. Once cleared by our treasury team, priority dispatch will commence.
+                          </p>
+                        </div>
+                      )}
+
                       <div className="bg-canvas-surface dark:bg-canvas-surfaceDark p-6 border border-borderMuted dark:border-borderDark space-y-4 text-xs">
                         <div className="flex justify-between border-b border-borderMuted/60 dark:border-borderDark/60 pb-2">
                           <span className="text-taupe uppercase text-[10px] tracking-wider">Settlement Auth:</span>
@@ -10234,7 +10374,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                             </div>
                           )}
 
-                          {/* PAYMENT DETAILS: YOUPI-PG V2 ZERO-FEE UPI GATEWAY */}
+                          {/* PAYMENT DETAILS: DIRECT ZERO-FEE UPI GATEWAY */}
                           {checkoutForm.paymentMethod === 'upi' && (() => {
                             const youpiVpa = settings.youpiVpa || 'agarawalrishav23@okaxis';
                             const youpiPayee = settings.youpiPayeeName || 'Rishav Kumar';
@@ -10252,7 +10392,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   <div className="flex items-center gap-2">
                                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
                                     <span className="text-xs font-mono font-bold tracking-wider uppercase text-noir dark:text-white flex items-center gap-1.5">
-                                      <span>⚡ YOUPI-PG V2</span>
+                                      <span>⚡ DIRECT INSTANT UPI SETTLEMENT</span>
                                       <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-normal">· ZERO PLATFORM FEE</span>
                                     </span>
                                   </div>
@@ -10293,7 +10433,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   <div className="sm:col-span-5 flex flex-col items-center justify-center p-3 bg-white rounded-lg border border-borderMuted/60 shadow-inner">
                                     <img 
                                       src={qrCodeUrl}
-                                      alt="YouPI NPCI Dynamic QR Code" 
+                                      alt="Direct NPCI Dynamic UPI QR Code" 
                                       className="w-44 h-44 object-contain rounded"
                                     />
                                     <span className="text-[9px] font-mono text-gray-500 uppercase tracking-widest mt-2 font-semibold">
@@ -10338,7 +10478,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                       </div>
                                       <div className="flex justify-between text-taupe">
                                         <span>Bank Gateway:</span>
-                                        <span className="text-emerald-600 dark:text-emerald-400 font-bold">YouPI Direct Zero-Fee v2</span>
+                                        <span className="text-emerald-600 dark:text-emerald-400 font-bold">Axis Bank / NPCI Direct Settlement</span>
                                       </div>
                                       <div className="flex justify-between text-taupe">
                                         <span>Instant Settlement:</span>
@@ -10376,99 +10516,153 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   </div>
                                 </div>
 
-                                {/* 12-Digit Bank UTR Input & Validation */}
-                                <div className="p-4 bg-canvas dark:bg-[#0E1017] border border-borderMuted dark:border-borderDark rounded-lg space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <label className="text-[11px] font-mono font-bold tracking-wider uppercase text-noir dark:text-white flex items-center gap-1.5">
-                                      <span>ENTER 12-DIGIT BANK UTR / REF NUMBER</span>
-                                      <span className="text-red-500">*</span>
-                                    </label>
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
-                                        utrLength === 12 
-                                          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' 
-                                          : 'bg-noir/5 dark:bg-white/5 text-taupe border-borderMuted dark:border-borderDark'
-                                      }`}>
-                                        {utrLength}/12 DIGITS
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => setYoupiHelpOpen(!youpiHelpOpen)}
-                                        className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 hover:underline uppercase font-bold"
-                                      >
-                                        {youpiHelpOpen ? 'Hide Help ▴' : 'Where to find UTR? ▾'}
-                                      </button>
+                                {/* AUTOMATED BANK SETTLEMENT RADAR (LANE 1) */}
+                                {upiAutoVerified ? (
+                                  <div className="p-4 bg-emerald-500/10 border-2 border-emerald-500/40 rounded-lg space-y-1.5 text-emerald-700 dark:text-emerald-400 font-mono fade-in">
+                                    <div className="flex items-center gap-2 font-bold text-xs uppercase tracking-wider">
+                                      <span>✓</span>
+                                      <span>AUTOMATED BANK SETTLEMENT VERIFIED</span>
                                     </div>
-                                  </div>
-
-                                  <div className="relative">
-                                    <input 
-                                      type="text" 
-                                      required
-                                      maxLength="12"
-                                      placeholder="e.g. 429810394812"
-                                      value={checkoutForm.youpiUtr || ''}
-                                      onChange={(e) => {
-                                        const cleanDigits = e.target.value.replace(/\D/g, '').slice(0, 12);
-                                        setCheckoutForm({
-                                          ...checkoutForm, 
-                                          youpiUtr: cleanDigits,
-                                          upiId: cleanDigits
-                                        });
-                                        if (checkoutErrors.youpiUtr) {
-                                          setCheckoutErrors({ ...checkoutErrors, youpiUtr: null, upiId: null });
-                                        }
-                                      }}
-                                      className={`minimal-input font-mono text-base font-bold tracking-widest pl-3 ${
-                                        utrLength === 12 
-                                          ? 'border-emerald-500 focus:border-emerald-500' 
-                                          : ''
-                                      }`}
-                                    />
-                                    {utrLength === 12 && (
-                                      <span className="absolute right-3 top-3 text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                                        ✓ READY
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  {(checkoutErrors.youpiUtr || checkoutErrors.upiId) && (
-                                    <p className="text-[10px] font-mono font-semibold text-red-500 mt-1">
-                                      {checkoutErrors.youpiUtr || checkoutErrors.upiId}
+                                    <p className="text-[11px] text-noir dark:text-white font-mono">
+                                      Credit Received: <strong>{formatPrice(upiDetectedCredit?.amount || grandTotal, currency)}</strong> · Reference: <strong className="font-mono">{checkoutForm.youpiUtr}</strong>
                                     </p>
-                                  )}
-
-                                  <p className="text-[9px] font-mono text-taupe leading-relaxed">
-                                    After completing payment in Google Pay, PhonePe, Paytm, or CRED, copy the 12-digit UPI Reference / UTR Number from your receipt and paste it here for instant confirmation.
-                                  </p>
-
-                                  {/* Expandable UTR Helper Drawer */}
-                                  {youpiHelpOpen && (
-                                    <div className="p-3.5 bg-white dark:bg-[#12151E] border border-borderMuted dark:border-borderDark rounded-lg space-y-2 mt-2 fade-in text-xs font-mono">
-                                      <p className="font-bold text-[10px] uppercase text-noir dark:text-white border-b border-borderMuted/60 dark:border-borderDark/60 pb-1">
-                                        🔍 HOW TO FIND YOUR 12-DIGIT UTR / REFERENCE NUMBER:
-                                      </p>
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-taupe">
-                                        <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
-                                          <strong className="text-noir dark:text-white block mb-0.5">🟣 PhonePe:</strong>
-                                          History → Tap payment → View "UTR" (12 digits, starts with 4xxx or 5xxx).
-                                        </div>
-                                        <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
-                                          <strong className="text-noir dark:text-white block mb-0.5">🔵 Google Pay:</strong>
-                                          Transaction Details → Look for "UPI transaction ID" (12 numerical digits).
-                                        </div>
-                                        <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
-                                          <strong className="text-noir dark:text-white block mb-0.5">🔷 Paytm:</strong>
-                                          Passbook / Balance History → Tap transaction → Copy "UPI Ref No." (12 digits).
-                                        </div>
-                                        <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
-                                          <strong className="text-noir dark:text-white block mb-0.5">⚡ CRED / BHIM:</strong>
-                                          Payment Receipt → Reference / UTR Number (12 numeric digits).
-                                        </div>
+                                    <p className="text-[10px] text-taupe dark:text-gray-400">
+                                      Your direct transfer has been confirmed and matched with our Axis Bank ledger. Click Confirm below to complete your order.
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-center justify-between gap-3 font-mono fade-in">
+                                    <div className="flex items-center gap-2.5">
+                                      <span className="relative flex h-2.5 w-2.5">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                                      </span>
+                                      <div>
+                                        <p className="text-[11px] font-bold text-noir dark:text-white uppercase tracking-wider">
+                                          LANE 1: LIVE AUTO-DETECTION RADAR ACTIVE
+                                        </p>
+                                        <p className="text-[9px] text-taupe dark:text-gray-400">
+                                          Listening for direct Axis Bank / NPCI credit. Completes automatically upon transfer.
+                                        </p>
                                       </div>
                                     </div>
-                                  )}
-                                </div>
+                                    <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 animate-pulse uppercase">
+                                      SCANNING...
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* LANE 2: CONCIERGE FALLBACK TOGGLE */}
+                                {!upiAutoVerified && !upiFallbackOpen && upiSecondsElapsed < 15 && (
+                                  <div className="text-center pt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setUpiFallbackOpen(true);
+                                        playHapticTone(700, 0.02, settings.enableSound);
+                                      }}
+                                      className="text-[10px] font-mono text-taupe hover:text-noir dark:hover:text-white underline uppercase tracking-wider flex items-center justify-center gap-1.5 mx-auto py-1"
+                                    >
+                                      <span>⏱ Taking longer than 15s? Submit UTR for Concierge Verification ▾</span>
+                                    </button>
+                                  </div>
+                                )}
+
+                                {/* LANE 2: 12-Digit Bank UTR Input & Validation */}
+                                {(!upiAutoVerified && (upiFallbackOpen || upiSecondsElapsed >= 15)) && (
+                                  <div className="p-4 bg-canvas dark:bg-[#0E1017] border border-borderMuted dark:border-borderDark rounded-lg space-y-2 fade-in">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-[11px] font-mono font-bold tracking-wider uppercase text-noir dark:text-white flex items-center gap-1.5">
+                                        <span>LANE 2: ENTER 12-DIGIT BANK UTR / REF NUMBER</span>
+                                        <span className="text-red-500">*</span>
+                                      </label>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                                          utrLength === 12 
+                                            ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' 
+                                            : 'bg-noir/5 dark:bg-white/5 text-taupe border-borderMuted dark:border-borderDark'
+                                        }`}>
+                                          {utrLength}/12 DIGITS
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setYoupiHelpOpen(!youpiHelpOpen)}
+                                          className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 hover:underline uppercase font-bold"
+                                        >
+                                          {youpiHelpOpen ? 'Hide Help ▴' : 'Where to find UTR? ▾'}
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    <div className="relative">
+                                      <input 
+                                        type="text" 
+                                        required
+                                        maxLength="12"
+                                        placeholder="e.g. 429810394812"
+                                        value={checkoutForm.youpiUtr || ''}
+                                        onChange={(e) => {
+                                          const cleanDigits = e.target.value.replace(/\D/g, '').slice(0, 12);
+                                          setCheckoutForm({
+                                            ...checkoutForm, 
+                                            youpiUtr: cleanDigits,
+                                            upiId: cleanDigits
+                                          });
+                                          if (checkoutErrors.youpiUtr) {
+                                            setCheckoutErrors({ ...checkoutErrors, youpiUtr: null, upiId: null });
+                                          }
+                                        }}
+                                        className={`minimal-input font-mono text-base font-bold tracking-widest pl-3 ${
+                                          utrLength === 12 
+                                            ? 'border-emerald-500 focus:border-emerald-500' 
+                                            : ''
+                                        }`}
+                                      />
+                                      {utrLength === 12 && (
+                                        <span className="absolute right-3 top-3 text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                          ✓ READY
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {(checkoutErrors.youpiUtr || checkoutErrors.upiId) && (
+                                      <p className="text-[10px] font-mono font-semibold text-red-500 mt-1">
+                                        {checkoutErrors.youpiUtr || checkoutErrors.upiId}
+                                      </p>
+                                    )}
+
+                                    <p className="text-[9px] font-mono text-taupe leading-relaxed">
+                                      If your UPI app has debited but auto-radar hasn't updated yet, paste your 12-digit UTR from your bank SMS or UPI receipt. Our concierge verifies it before courier dispatch.
+                                    </p>
+
+                                    {/* Expandable UTR Helper Drawer */}
+                                    {youpiHelpOpen && (
+                                      <div className="p-3.5 bg-white dark:bg-[#12151E] border border-borderMuted dark:border-borderDark rounded-lg space-y-2 mt-2 fade-in text-xs font-mono">
+                                        <p className="font-bold text-[10px] uppercase text-noir dark:text-white border-b border-borderMuted/60 dark:border-borderDark/60 pb-1">
+                                          🔍 HOW TO FIND YOUR 12-DIGIT UTR / REFERENCE NUMBER:
+                                        </p>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-taupe">
+                                          <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
+                                            <strong className="text-noir dark:text-white block mb-0.5">🟣 PhonePe:</strong>
+                                            History → Tap payment → View "UTR" (12 digits, starts with 4xxx or 5xxx).
+                                          </div>
+                                          <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
+                                            <strong className="text-noir dark:text-white block mb-0.5">🔵 Google Pay:</strong>
+                                            Transaction Details → Look for "UPI transaction ID" (12 numerical digits).
+                                          </div>
+                                          <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
+                                            <strong className="text-noir dark:text-white block mb-0.5">🔷 Paytm:</strong>
+                                            Passbook / Balance History → Tap transaction → Copy "UPI Ref No." (12 digits).
+                                          </div>
+                                          <div className="p-2 bg-canvas dark:bg-[#0B0D13] rounded border border-borderMuted/40">
+                                            <strong className="text-noir dark:text-white block mb-0.5">⚡ CRED / BHIM:</strong>
+                                            Payment Receipt → Reference / UTR Number (12 numeric digits).
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             );
                           })()}
@@ -10876,7 +11070,11 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   ? `CONFIRM COD ORDER · PAY ADVANCE ${formatPrice(shippingFee, currency)}`
                                   : `CONFIRM CASH ON DELIVERY ORDER (${formatPrice(grandTotal, currency)})`
                               )}
-                              {checkoutForm.paymentMethod === 'upi' && `CONFIRM YOUPI PAYMENT · ${formatPrice(grandTotal, currency)}`}
+                              {checkoutForm.paymentMethod === 'upi' && (
+                                upiAutoVerified 
+                                  ? `COMPLETE ORDER (BANK VERIFIED) · ${formatPrice(grandTotal, currency)}`
+                                  : `CONFIRM UPI SETTLEMENT · ${formatPrice(grandTotal, currency)}`
+                              )}
                               {checkoutForm.paymentMethod === 'card' && `AUTHORIZE CARD PAYMENT (${formatPrice(grandTotal, currency)})`}
                             </span>
                           )}

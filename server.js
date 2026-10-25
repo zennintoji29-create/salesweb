@@ -361,8 +361,8 @@ async function handleRequest(req, res) {
       return;
     }
 
-    // --- API: YOUPI-PG V2 ZERO-FEE UPI GATEWAY ---
-    if (pathname === '/api/youpi/verify-utr' && req.method === 'POST') {
+    // --- API: DIRECT ZERO-FEE UPI GATEWAY ---
+    if ((pathname === '/api/upi/verify-utr' || pathname === '/api/youpi/verify-utr') && req.method === 'POST') {
       const body = await parseJsonBody(req);
       const utr = body.utr || body.ref || body.rrn;
       const orderId = body.orderId || null;
@@ -382,16 +382,101 @@ async function handleRequest(req, res) {
         const body = await parseJsonBody(req);
         const utr = body.utr || body.ref || body.rrn;
         const orderId = body.orderId || body.order_id;
+        const amount = body.amount || 0;
         if (!utr) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Missing UTR reference' }));
           return;
         }
+        await db.recordBankCredit({ utr, amount, sender: body.sender || '', raw: JSON.stringify(body) });
         const result = await db.confirmOrderUtr(utr, orderId);
         res.writeHead(result.valid ? 200 : 400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
         return;
       }
+    }
+
+    // --- REAL-TIME LIVE UPI PAYMENT DETECTION RADAR ---
+    if ((pathname === '/api/upi/check-status' || pathname === '/api/youpi/check-status') && req.method === 'GET') {
+      const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      const amount = parsedUrl.searchParams.get('amount');
+      const utr = parsedUrl.searchParams.get('utr');
+      const match = await db.checkBankCredit({ amount, utr });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(match));
+      return;
+    }
+
+    // --- ADMIN ONE-CLICK VERIFY & APPROVE / REJECT PAYMENT ---
+    if (pathname.includes('/approve-payment') && req.method === 'POST') {
+      if (!isAuthenticatedAdmin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: Admin authentication required' }));
+        return;
+      }
+      const orderId = pathname.split('/')[3];
+      const body = await parseJsonBody(req).catch(() => ({}));
+      const utr = body.utr || 'CONCIERGE_VERIFIED';
+      const newStatus = `Paid & Confirmed via UPI (Ref: ${utr})`;
+      await db.updateOrder(orderId, { status: newStatus });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, status: newStatus }));
+      return;
+    }
+
+    if (pathname.includes('/reject-payment') && req.method === 'POST') {
+      if (!isAuthenticatedAdmin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: Admin authentication required' }));
+        return;
+      }
+      const orderId = pathname.split('/')[3];
+      const newStatus = 'Cancelled (Invalid Payment Reference)';
+      await db.updateOrder(orderId, { status: newStatus });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, status: newStatus }));
+      return;
+    }
+
+    // --- YOUPI SMS GATEWAY APK PAIRING & SMS NOTIFICATION LISTENER ---
+    if (pathname.includes('/pair') || pathname.includes('/enroll') || pathname.includes('/connect') || pathname === '/api/device' || pathname === '/api/gateway') {
+      const body = await parseJsonBody(req).catch(() => ({}));
+      console.log('\n[Atelier UPI Gateway] ★ DEVICE PAIRING SUCCESSFUL:', body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        status: 'PAIRED',
+        paired: true,
+        message: 'Device successfully paired to Tokyo Drift Atelier Gateway',
+        deviceId: body.deviceId || body.device || 'CPH2617',
+        token: body.token || 'tokyodrift_youpi_token'
+      }));
+      return;
+    }
+
+    if (pathname.includes('/sms') || pathname.includes('/notification') || pathname === '/api/events') {
+      const body = await parseJsonBody(req).catch(() => ({}));
+      console.log('\n[Atelier UPI Gateway] ★ BANK SMS / NOTIFICATION RECEIVED:', body);
+      const text = body.message || body.text || body.body || JSON.stringify(body);
+      const utrMatch = text.match(/(?:UPI Ref|UTR|Ref No|Reference)[\s\/:#]*(\d{12})/i) || text.match(/\b(\d{12})\b/);
+      const amountMatch = text.match(/(?:INR|Rs\.?|₹)\s*(\d+(?:\.\d{1,2})?)/i) || text.match(/(?:credited with|received)\s*(\d+(?:\.\d{1,2})?)/i);
+      const utr = body.utr || (utrMatch ? utrMatch[1] : null);
+      const amount = body.amount || (amountMatch ? parseFloat(amountMatch[1]) : 0);
+
+      if (utr) {
+        console.log(`[Atelier UPI Gateway] Extracted -> UTR: ${utr}, Amount: ₹${amount}`);
+        await db.recordBankCredit({ utr, amount, sender: body.sender || '', raw: text });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, processed: true, utr, amount }));
+      return;
+    }
+
+    if (pathname === '/api/heartbeat' || pathname === '/api/ping' || pathname === '/api/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, status: 'ONLINE', time: new Date().toISOString() }));
+      return;
     }
 
     // --- API: TRACK VIEWS & ANALYTICS ---
