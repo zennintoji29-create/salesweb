@@ -137,9 +137,18 @@ async function handleRequest(req, res) {
     return;
   }
 
-  const rawUrl = req.url || '/';
+  const rawUrl = req.headers['x-forwarded-uri'] || req.url || '/';
   const url = new URL(rawUrl, `http://${req.headers.host || 'localhost'}`);
-  const pathname = url.pathname;
+  let pathname = url.pathname;
+
+  // Resilient pathname normalization for Vercel Serverless Function & rewrite proxies
+  if (req.query && req.query.slug && (pathname === '/api' || pathname === '/api/')) {
+    const slugStr = Array.isArray(req.query.slug) ? req.query.slug.join('/') : req.query.slug;
+    pathname = '/api/' + slugStr;
+  }
+  if (!pathname.startsWith('/api') && !pathname.startsWith('/uploads') && pathname !== '/' && pathname !== '/admin' && !path.extname(pathname)) {
+    pathname = '/api' + (pathname.startsWith('/') ? pathname : '/' + pathname);
+  }
   const isAdmin = isAdminRequest(req, url);
 
   try {
