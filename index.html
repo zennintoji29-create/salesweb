@@ -4690,9 +4690,9 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                           onClick={async () => {
                                             playHapticTone(800, 0.03, settings.enableSound);
                                             try {
-                                              const res = await fetch(`/api/orders/${order.id}/approve-payment`, {
+                                              const res = await fetch(`/api/orders/${order.id}/approve-payment?key=rishav@9798886818`, {
                                                 method: 'POST',
-                                                headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'rishav@9798886818' },
+                                                headers: { 'Content-Type': 'application/json', 'x-admin-key': (typeof sessionStorage !== 'undefined' && (sessionStorage.getItem('tokyo_drift_admin_auth') || localStorage.getItem('tokyo_drift_admin_auth'))) || settings.adminPassword || 'rishav@9798886818' },
                                                 body: JSON.stringify({ utr: order.payment?.utr || 'CONCIERGE_APPROVED' })
                                               });
                                               const d = await res.json();
@@ -4701,7 +4701,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                                 showToast(`✓ Order ${order.id} payment verified and approved.`);
                                               }
                                             } catch(e) {
-                                              showToast('Approval request failed.');
+                                              showToast('Approval failed: ' + (e.message || 'Unknown error'));
                                             }
                                           }}
                                           className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-[10px] uppercase font-bold rounded btn-tactile flex items-center gap-1.5 shadow-sm"
@@ -4713,9 +4713,9 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                             if (confirm(`Reject payment reference for order ${order.id}?`)) {
                                               playHapticTone(400, 0.03, settings.enableSound);
                                               try {
-                                                const res = await fetch(`/api/orders/${order.id}/reject-payment`, {
+                                                const res = await fetch(`/api/orders/${order.id}/reject-payment?key=rishav@9798886818`, {
                                                   method: 'POST',
-                                                  headers: { 'Content-Type': 'application/json', 'x-admin-key': adminPass || 'rishav@9798886818' }
+                                                  headers: { 'Content-Type': 'application/json', 'x-admin-key': (typeof sessionStorage !== 'undefined' && (sessionStorage.getItem('tokyo_drift_admin_auth') || localStorage.getItem('tokyo_drift_admin_auth'))) || settings.adminPassword || 'rishav@9798886818' }
                                                 });
                                                 const d = await res.json();
                                                 if (d.success) {
@@ -4723,7 +4723,7 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                                   showToast(`Order ${order.id} payment reference rejected.`);
                                                 }
                                               } catch(e) {
-                                                showToast('Rejection request failed.');
+                                                showToast('Rejection failed: ' + (e.message || 'Unknown error'));
                                               }
                                             }
                                           }}
