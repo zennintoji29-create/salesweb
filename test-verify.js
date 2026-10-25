@@ -139,6 +139,47 @@ async function runAllTests() {
     });
     assert(authExport.statusCode === 200 && authExport.json && Array.isArray(authExport.json.products), 'GET /api/db/export with x-admin-key returns backup json');
 
+    // Order Lifecycle & Administrative Security
+    const testOrderId = `TKD-TEST-${Date.now()}`;
+    const testOrder = {
+      id: testOrderId,
+      date: new Date().toISOString(),
+      status: 'Authorized',
+      customer: { fullName: 'Test Client', email: 'test@client.jp' },
+      items: [{ id: 'PRD-TEST', title: 'Test Garment', size: 'M', quantity: 1, price: 999 }],
+      financials: { grandTotal: 999 }
+    };
+
+    const placeOrder = await request('/api/orders', {
+      method: 'POST',
+      body: testOrder
+    });
+    assert(placeOrder.statusCode === 200 && placeOrder.json && placeOrder.json.success, 'POST /api/orders saves order to database pipeline');
+
+    const unauthUpdateOrder = await request(`/api/orders/${testOrderId}`, {
+      method: 'PUT',
+      body: { status: 'Delivered' }
+    });
+    assert(unauthUpdateOrder.statusCode === 403, 'PUT /api/orders/:id without key is blocked (403 Forbidden)');
+
+    const authUpdateOrder = await request(`/api/orders/${testOrderId}`, {
+      method: 'PUT',
+      headers: { 'x-admin-key': ADMIN_KEY },
+      body: { status: 'Delivered' }
+    });
+    assert(authUpdateOrder.statusCode === 200, 'PUT /api/orders/:id with x-admin-key updates order status (200 OK)');
+
+    const unauthDeleteOrder = await request(`/api/orders/${testOrderId}`, {
+      method: 'DELETE'
+    });
+    assert(unauthDeleteOrder.statusCode === 403, 'DELETE /api/orders/:id without key is blocked (403 Forbidden)');
+
+    const authDeleteOrder = await request(`/api/orders/${testOrderId}`, {
+      method: 'DELETE',
+      headers: { 'x-admin-key': ADMIN_KEY }
+    });
+    assert(authDeleteOrder.statusCode === 200, 'DELETE /api/orders/:id with x-admin-key deletes order (200 OK)');
+
     // Critical Security: Static File Leakage Protection
     console.log('\n--- 3. SECURITY PENETRATION TESTS ---');
     const envLeak = await request('/.env.local');

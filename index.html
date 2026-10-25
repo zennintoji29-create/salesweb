@@ -23,6 +23,44 @@
   <!-- Stripe JS SDK -->
   <script src="https://js.stripe.com/v3/"></script>
 
+  <!-- Synchronous Admin API Fetch Interceptor -->
+  <script>
+    (function setupGlobalApiInterceptor() {
+      var origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        init = init || {};
+        var adminKey = '';
+        try {
+          adminKey = localStorage.getItem('tokyo_drift_admin_auth') || 
+                     sessionStorage.getItem('tokyo_drift_admin_auth') || '';
+        } catch(e) {}
+
+        var urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (adminKey && urlStr.indexOf('/api/') !== -1) {
+          if (!init.headers) {
+            init.headers = {};
+          }
+          if (init.headers instanceof Headers) {
+            if (!init.headers.has('x-admin-key')) {
+              init.headers.set('x-admin-key', adminKey);
+            }
+          } else if (Array.isArray(init.headers)) {
+            var hasKey = false;
+            for (var i = 0; i < init.headers.length; i++) {
+              if (init.headers[i][0].toLowerCase() === 'x-admin-key') { hasKey = true; break; }
+            }
+            if (!hasKey) init.headers.push(['x-admin-key', adminKey]);
+          } else if (typeof init.headers === 'object') {
+            if (!init.headers['x-admin-key'] && !init.headers['X-Admin-Key']) {
+              init.headers['x-admin-key'] = adminKey;
+            }
+          }
+        }
+        return origFetch.call(this, input, init);
+      };
+    })();
+  </script>
+
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -179,25 +217,6 @@
 
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
-
-    // Global API fetch interceptor: automatically attaches x-admin-key when admin is authenticated
-    (function setupApiInterceptor() {
-      const origFetch = window.fetch;
-      window.fetch = function(input, init = {}) {
-        let adminKey = '';
-        try {
-          adminKey = sessionStorage.getItem('tokyo_drift_admin_auth') || localStorage.getItem('tokyo_drift_admin_auth') || '';
-        } catch(e) {}
-        
-        const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-        if (adminKey && urlStr.startsWith('/api/')) {
-          const opts = { ...init };
-          opts.headers = { ...opts.headers, 'x-admin-key': adminKey };
-          return origFetch.call(this, input, opts);
-        }
-        return origFetch.call(this, input, init);
-      };
-    })();
 
     // --- STORAGE KEYS ---
     const STORAGE_KEYS = {
@@ -523,6 +542,7 @@
           playHapticTone(900, 0.04, settings.enableSound);
           try {
             sessionStorage.setItem('tokyo_drift_admin_auth', 'rishav@9798886818');
+            localStorage.setItem('tokyo_drift_admin_auth', 'rishav@9798886818');
           } catch(err) {}
           setIsAdminAuthenticated(true);
           setAdminPasswordError('');
@@ -4609,6 +4629,22 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                         className="px-4 py-2 bg-noir text-white dark:bg-white dark:text-noir text-[10px] tracking-widest uppercase rounded btn-tactile flex items-center gap-1.5"
                                       >
                                         <span>🖨 Print Invoice</span>
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          if (confirm(`Permanently delete order ${order.id} from database?`)) {
+                                            playHapticTone(400, 0.03, settings.enableSound);
+                                            setOrders(prev => prev.filter(o => o.id !== order.id));
+                                            showToast(`Order ${order.id} permanently deleted.`);
+                                            try {
+                                              await fetch(`/api/orders/${order.id}`, { method: 'DELETE' });
+                                            } catch(err) {}
+                                          }
+                                        }}
+                                        className="px-3 py-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 text-[10px] tracking-wider uppercase rounded btn-tactile font-mono"
+                                        title="Delete Order"
+                                      >
+                                        <span>✕ Delete</span>
                                       </button>
                                     </div>
                                   </div>

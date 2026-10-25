@@ -548,6 +548,22 @@ async function updateOrder(id, { status, carrier, trackingNumber }) {
   return { success: true, id };
 }
 
+async function deleteOrder(id) {
+  if (pgPool) {
+    try {
+      await pgPool.query('DELETE FROM td_orders WHERE id = $1', [id]);
+    } catch(e) {
+      console.error('[DB] deleteOrder PG error:', e.message);
+    }
+  }
+  if (sqliteDb) {
+    try {
+      sqliteDb.prepare('DELETE FROM orders WHERE id = ?').run(id);
+    } catch(e) {}
+  }
+  return { success: true, id };
+}
+
 async function getTracking(orderId) {
   let order = null;
   if (pgPool) {
@@ -1465,6 +1481,7 @@ module.exports = {
   getOrders,
   saveOrder,
   updateOrder,
+  deleteOrder,
   getTracking,
   getSettings,
   saveSettings,

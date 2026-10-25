@@ -347,6 +347,20 @@ async function handleRequest(req, res) {
       return;
     }
 
+    // --- API: DELETE ORDER ---
+    if (pathname.startsWith('/api/orders/') && req.method === 'DELETE') {
+      if (!isAdmin) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: Admin privileges required' }));
+        return;
+      }
+      const id = pathname.replace('/api/orders/', '');
+      const result = await db.deleteOrder(id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
     // --- API: TRACK VIEWS & ANALYTICS ---
     if (pathname === '/api/track-view' && req.method === 'POST') {
       const body = await parseJsonBody(req);
