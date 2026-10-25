@@ -122,7 +122,7 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   // Global Security & CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const rawUrl = req.headers['x-matched-path'] || req.url;
+  const rawUrl = req.url || '/';
   const url = new URL(rawUrl, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
   const isAdmin = isAdminRequest(req, url);
@@ -926,7 +926,9 @@ const server = http.createServer(async (req, res) => {
   // 404 for missing static assets (images, css, js)
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('404 Not Found');
-});
+}
+
+const server = http.createServer(handleRequest);
 
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
@@ -942,3 +944,4 @@ if (require.main === module) {
 }
 
 module.exports = server;
+module.exports.handler = handleRequest;
