@@ -2289,6 +2289,16 @@ Tokyo Drift garments carry lifetime atelier provenance.
         if (Object.keys(errors).length > 0) {
           setCheckoutErrors(errors);
           playHapticTone(300, 0.05, settings.enableSound);
+          const firstErrMsg = Object.values(errors)[0];
+          showToast(`⚠️ ${firstErrMsg}`);
+          try {
+            const firstErrField = Object.keys(errors)[0];
+            const el = document.querySelector(`[name="${firstErrField}"]`) || document.getElementById(`checkout-${firstErrField}-input`) || document.getElementById('checkout-policy-checkbox');
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              if (el.focus) el.focus();
+            }
+          } catch(err) {}
           return;
         }
 
@@ -10196,6 +10206,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               </label>
                               <input 
                                 type="text" 
+                                name="fullName"
+                                id="checkout-fullName-input"
                                 required
                                 placeholder="Alexander Vance"
                                 value={checkoutForm.fullName}
@@ -10210,6 +10222,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               </label>
                               <input 
                                 type="email" 
+                                name="email"
+                                id="checkout-email-input"
                                 required
                                 placeholder="vance@tokyodrift-atelier.jp"
                                 value={checkoutForm.email}
@@ -10224,6 +10238,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               </label>
                               <input 
                                 type="tel" 
+                                name="phone"
+                                id="checkout-phone-input"
                                 required
                                 placeholder="+91 98765 43210"
                                 value={checkoutForm.phone || ''}
@@ -10240,6 +10256,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                             </label>
                             <input 
                               type="text" 
+                              name="address"
+                              id="checkout-address-input"
                               required
                               placeholder="5-7-22 Minamiaoyama or Apartment / Suite"
                               value={checkoutForm.address}
@@ -10256,6 +10274,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               </label>
                               <input 
                                 type="text" 
+                                name="city"
+                                id="checkout-city-input"
                                 required
                                 placeholder="Tokyo / Mumbai"
                                 value={checkoutForm.city}
@@ -10270,6 +10290,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                               </label>
                               <input 
                                 type="text" 
+                                name="postalCode"
+                                id="checkout-postalCode-input"
                                 required
                                 placeholder="107-0062 / 400001"
                                 value={checkoutForm.postalCode}
@@ -10600,15 +10622,26 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                 {!upiAutoVerified && (
                                   <div className="pt-2 text-center space-y-2 fade-in">
                                     <button
+                                      id="lane2-fallback-btn"
                                       type="button"
+                                      disabled={isProcessingPayment}
                                       onClick={() => {
                                         handleCheckoutSubmit();
                                       }}
-                                      className="w-full py-3.5 px-4 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 hover:border-amber-500/50 rounded-lg text-amber-600 dark:text-amber-400 font-mono text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 group cursor-pointer shadow-sm"
+                                      className="w-full py-3.5 px-4 bg-amber-500/10 hover:bg-amber-500/20 active:bg-amber-500/30 border border-amber-500/30 hover:border-amber-500/50 rounded-lg text-amber-600 dark:text-amber-400 font-mono text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 group cursor-pointer shadow-sm active:scale-98"
                                     >
-                                      <span className="group-hover:scale-110 transition-transform">⏱</span>
-                                      <span>I Have Paid — Submit for Admin Approval</span>
-                                      <span className="group-hover:translate-x-1 transition-transform">→</span>
+                                      {isProcessingPayment ? (
+                                        <>
+                                          <span className="w-3.5 h-3.5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></span>
+                                          <span>TRANSMITTING FOR CONCIERGE CLEARANCE...</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span className="group-hover:scale-110 transition-transform">⏱</span>
+                                          <span>I Have Paid — Submit for Admin Approval</span>
+                                          <span className="group-hover:translate-x-1 transition-transform">→</span>
+                                        </>
+                                      )}
                                     </button>
                                     <p className="text-[10px] font-mono text-taupe dark:text-gray-400">
                                       Paid via UPI? Click above to notify our concierge team. Your order will be placed in <em>Waiting for Admin Approval</em> for 1-click clearance.
@@ -10987,6 +11020,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                           <label className="flex items-start gap-2.5 cursor-pointer select-none">
                             <input
                               type="checkbox"
+                              name="policy"
+                              id="checkout-policy-checkbox"
                               checked={agreeExchangePolicy}
                               onChange={(e) => setAgreeExchangePolicy(e.target.checked)}
                               className="w-4 h-4 mt-0.5 rounded border-borderMuted accent-noir dark:accent-white"
@@ -11007,8 +11042,27 @@ Tokyo Drift garments carry lifetime atelier provenance.
 
                         <button
                           type="submit"
-                          disabled={isProcessingPayment || (checkoutForm.paymentMethod === 'upi' && !upiAutoVerified)}
-                          className="w-full py-4 bg-noir text-white dark:bg-white dark:text-noir text-xs tracking-ultra uppercase font-medium hover:opacity-90 transition-all flex items-center justify-center gap-2 btn-tactile"
+                          disabled={isProcessingPayment}
+                          onClick={(e) => {
+                            if (checkoutForm.paymentMethod === 'upi' && !upiAutoVerified) {
+                              e.preventDefault();
+                              showToast("ℹ️ Bank payment radar is active. If you already transferred funds, click '⏱ I Have Paid — Submit for Admin Approval' above.");
+                              playHapticTone(400, 0.05, settings.enableSound);
+                              try {
+                                const fbBtn = document.getElementById('lane2-fallback-btn');
+                                if (fbBtn) {
+                                  fbBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                  fbBtn.classList.add('ring-2', 'ring-amber-500', 'animate-pulse');
+                                  setTimeout(() => fbBtn.classList.remove('ring-2', 'ring-amber-500', 'animate-pulse'), 3000);
+                                }
+                              } catch(err) {}
+                            }
+                          }}
+                          className={`w-full py-4 text-xs tracking-ultra uppercase font-medium transition-all flex items-center justify-center gap-2 btn-tactile ${
+                            checkoutForm.paymentMethod === 'upi' && !upiAutoVerified
+                              ? 'bg-noir/30 text-white/70 dark:bg-white/20 dark:text-noir/70 border border-borderMuted/40 dark:border-borderDark/40 hover:bg-noir/40 dark:hover:bg-white/30 cursor-pointer shadow-inner'
+                              : 'bg-noir text-white dark:bg-white dark:text-noir hover:opacity-90'
+                          }`}
                         >
                           {isProcessingPayment ? (
                             <>

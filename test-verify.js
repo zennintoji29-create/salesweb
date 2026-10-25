@@ -315,8 +315,8 @@ async function runAllTests() {
     assert(debitSms.statusCode === 200 && debitSms.json.status === 'IGNORED' && debitSms.json.reason === 'debit_transaction', 'POST /api/sms safely ignores outgoing merchant debit SMS notifications');
 
     // 8.3 Bank SMS Gateway: Genuine Inward Credit Processing
-    const testCreditUtr = '876543210987';
-    const testCreditAmount = 3499;
+    const testCreditUtr = '876' + Math.floor(100000000 + Math.random() * 900000000);
+    const testCreditAmount = 3000 + Math.floor(Math.random() * 900);
     const creditSms = await request('/api/sms', {
       method: 'POST',
       body: { body: `A/c *1234 credited by Rs. ${testCreditAmount}.00 on 25-Oct-26 via UPI Ref ${testCreditUtr} - Axis Bank` }
