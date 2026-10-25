@@ -276,7 +276,7 @@ async function runAllTests() {
       id: youpiTestOrderId,
       date: new Date().toISOString(),
       status: 'Paid via YouPI',
-      payment: { method: 'upi', gateway: 'youpi-pg', utr: testUtr, vpa: 'agarawalrishav23@okaxis', payeeName: 'Rishav Kumar' },
+      payment: { method: 'upi', gateway: 'youpi-pg', utr: testUtr, vpa: 'subhansusatya2006@oksbi', payeeName: 'Subhansu Satya' },
       customer: { fullName: 'Test Client', email: 'test@tokyodrift.in' },
       financials: { grandTotal: 4999 }
     });

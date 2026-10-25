@@ -664,11 +664,11 @@ async function getTracking(orderId) {
 async function getSettings() {
   const decorateSettings = (s) => {
     const obj = s || {};
-    if (!obj.youpiVpa) obj.youpiVpa = 'agarawalrishav23@okaxis';
-    if (!obj.youpiPayeeName) obj.youpiPayeeName = 'Rishav Kumar';
+    if (!obj.youpiVpa || obj.youpiVpa === 'agarawalrishav23@okaxis') obj.youpiVpa = 'subhansusatya2006@oksbi';
+    if (!obj.youpiPayeeName || obj.youpiPayeeName === 'Rishav Kumar') obj.youpiPayeeName = 'Subhansu Satya';
     if (obj.enableYoupiUpi === undefined) obj.enableYoupiUpi = true;
     if (obj.youpiAutoApproveUtr === undefined) obj.youpiAutoApproveUtr = true;
-    if (!obj.codUpiId || obj.codUpiId === 'tokyodrift@upi') obj.codUpiId = 'agarawalrishav23@okaxis';
+    if (!obj.codUpiId || obj.codUpiId === 'tokyodrift@upi' || obj.codUpiId === 'agarawalrishav23@okaxis') obj.codUpiId = 'subhansusatya2006@oksbi';
     return obj;
   };
 
