@@ -441,7 +441,7 @@ async function handleRequest(req, res) {
     // --- YOUPI SMS GATEWAY APK PAIRING & SMS NOTIFICATION LISTENER ---
     if (pathname.includes('/pair') || pathname.includes('/enroll') || pathname.includes('/connect') || pathname === '/api/device' || pathname === '/api/gateway') {
       const body = await parseJsonBody(req).catch(() => ({}));
-      console.log('\n[Atelier UPI Gateway] ★ DEVICE PAIRING SUCCESSFUL:', body);
+      console.log('\n[Atelier UPI Gateway] ★ DEVICE PAIRING REQUEST RECEIVED:', body);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
@@ -449,15 +449,19 @@ async function handleRequest(req, res) {
         paired: true,
         message: 'Device successfully paired to Tokyo Drift Atelier Gateway',
         deviceId: body.deviceId || body.device || 'CPH2617',
-        token: body.token || 'tokyodrift_youpi_token'
+        signingKey: 'tokyodrift_signing_secret_key',
+        signing_key: 'tokyodrift_signing_secret_key',
+        merchantId: body.merchantId || '00000000-0000-0000-0000-000000000001',
+        merchant_id: body.merchantId || '00000000-0000-0000-0000-000000000001',
+        token: body.token || body.enrollmentToken || 'tokyodrift'
       }));
       return;
     }
 
-    if (pathname.includes('/sms') || pathname.includes('/notification') || pathname === '/api/events') {
+    if (pathname.includes('/sms') || pathname.includes('/notification') || pathname.includes('/events')) {
       const body = await parseJsonBody(req).catch(() => ({}));
       console.log('\n[Atelier UPI Gateway] ★ BANK SMS / NOTIFICATION RECEIVED:', body);
-      const text = body.message || body.text || body.body || JSON.stringify(body);
+      const text = body.body || body.message || body.text || JSON.stringify(body);
       const utrMatch = text.match(/(?:UPI Ref|UTR|Ref No|Reference)[\s\/:#]*(\d{12})/i) || text.match(/\b(\d{12})\b/);
       const amountMatch = text.match(/(?:INR|Rs\.?|₹)\s*(\d+(?:\.\d{1,2})?)/i) || text.match(/(?:credited with|received)\s*(\d+(?:\.\d{1,2})?)/i);
       const utr = body.utr || (utrMatch ? utrMatch[1] : null);
@@ -469,13 +473,13 @@ async function handleRequest(req, res) {
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, processed: true, utr, amount }));
+      res.end(JSON.stringify({ success: true, status: 'OK', processed: true, utr, amount }));
       return;
     }
 
-    if (pathname === '/api/heartbeat' || pathname === '/api/ping' || pathname === '/api/status') {
+    if (pathname.includes('/heartbeat') || pathname === '/api/ping' || pathname === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, status: 'ONLINE', time: new Date().toISOString() }));
+      res.end(JSON.stringify({ success: true, status: 'OK', time: new Date().toISOString() }));
       return;
     }
 
