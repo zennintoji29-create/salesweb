@@ -324,6 +324,20 @@ async function runAllTests() {
     assert(creditSms.statusCode === 200 && creditSms.json.status === 'OK' && creditSms.json.processed === true, 'POST /api/sms parses and records genuine inbound credit SMS');
     assert(creditSms.json.utr === testCreditUtr && creditSms.json.amount === testCreditAmount, 'POST /api/sms extracts exact UTR and amount from SMS text');
 
+    // 8.3.1 Google Pay Push Notification Processing (Without UTR in banner)
+    const gpayNotif = await request('/api/v1/pollers/android/events', {
+      method: 'POST',
+      body: {
+        title: 'UMARANI SUAR paid you ₹2.00',
+        text: 'Tokyo Drift Archival',
+        package: 'com.google.android.apps.nbu.paisa.user',
+        deviceId: 'CPH2617',
+        amount: 2
+      }
+    });
+    assert(gpayNotif.statusCode === 200 && gpayNotif.json.status === 'OK' && gpayNotif.json.processed === true, 'POST /api/.../events captures GPay notification without UTR');
+    assert(gpayNotif.json.amount === 2 && typeof gpayNotif.json.utr === 'string', 'POST /api/.../events generates reference and records ₹2 credit');
+
     // 8.4 Real-Time Live Radar Polling with "since" Timestamp
     const recentSince = new Date(Date.now() - 60000).toISOString();
     const radarMatch = await request(`/api/upi/check-status?amount=${testCreditAmount}&since=${encodeURIComponent(recentSince)}`);

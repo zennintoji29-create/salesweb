@@ -517,10 +517,19 @@ async function handleRequest(req, res) {
       lastGatewayPingTime = Date.now();
       if (body.deviceId || body.device) lastGatewayDevice = body.deviceId || body.device;
       console.log('\n[Atelier UPI Gateway] ★ BANK SMS / NOTIFICATION RECEIVED:', body);
-      const text = body.body || body.message || body.text || JSON.stringify(body);
+      
+      const allText = [
+        body.title,
+        body.text,
+        body.body,
+        body.message,
+        body.rawNotification,
+        body.sender,
+        body.senderVpa
+      ].filter(Boolean).join(' ') || JSON.stringify(body);
 
       // Check for debit transactions to prevent matching money spent by the merchant
-      const isDebitOnly = /(?:debited|paid to|withdrawn|sent to)\b/i.test(text) && !/(?:credited|received|deposited)\b/i.test(text);
+      const isDebitOnly = /(?:debited|withdrawn|sent to)\b/i.test(allText) && !/(?:credited|received|deposited|paid you)\b/i.test(allText);
       if (isDebitOnly) {
         console.log('[Atelier UPI Gateway] Ignoring outgoing debit SMS notification.');
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -528,25 +537,47 @@ async function handleRequest(req, res) {
         return;
       }
 
-      const utrMatch = text.match(/(?:UPI Ref(?:erence)?(?: no\.?)?|UTR(?: no\.?)?|Ref No\.?|Reference(?:\s*Number)?|Txn(?:\s*Id)?|RRN)[\s\/:#]*(\d{12})/i) || text.match(/\b(\d{12})\b/);
-      const amountMatch = text.match(/(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/i) || text.match(/(?:credited (?:by|with)?|received)\s*(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i);
-      
-      const utr = (body.utr && /^\d{12}$/.test(String(body.utr).trim()))
+      const utrMatch = allText.match(/(?:UPI Ref(?:erence)?(?: no\.?)?|UTR(?: no\.?)?|Ref No\.?|Reference(?:\s*Number)?|Txn(?:\s*Id)?|RRN)[\s\/:#]*(\d{12})/i) || allText.match(/\b(\d{12})\b/);
+      const amountMatch = allText.match(/(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/i) 
+        || allText.match(/(?:credited (?:by|with)?|received|paid you|deposited)\s*(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i);
+
+      let utr = (body.utr && /^\d{12}$/.test(String(body.utr).trim()))
         ? String(body.utr).trim()
-        : (utrMatch ? utrMatch[1] : null);
+        : (body.bankReferenceNumber && /^\d{12}$/.test(String(body.bankReferenceNumber).trim())
+            ? String(body.bankReferenceNumber).trim()
+            : (utrMatch ? utrMatch[1] : null));
 
-      const rawAmount = amountMatch ? amountMatch[1].replace(/,/g, '') : null;
-      const amount = (body.amount && !isNaN(Number(body.amount)))
-        ? Number(body.amount)
-        : (rawAmount ? parseFloat(rawAmount) : 0);
+      let amount = 0;
+      if (body.amount && !isNaN(Number(body.amount)) && Number(body.amount) > 0) {
+        amount = Number(body.amount);
+      } else if (body.amountPaise && !isNaN(Number(body.amountPaise)) && Number(body.amountPaise) > 0) {
+        amount = Number(body.amountPaise) / 100;
+      } else if (amountMatch) {
+        amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+      }
 
-      if (utr) {
-        console.log(`[Atelier UPI Gateway] Extracted -> UTR: ${utr}, Amount: ₹${amount}`);
-        await db.recordBankCredit({ utr, amount, sender: body.sender || '', raw: text });
+      // If we got a confirmed payment notification with an amount from GPay/PhonePe/Paytm/Bank
+      if (amount > 0) {
+        if (!utr) {
+          // Generate a clean payment reference when notification banner does not display the 12-digit UTR
+          const pkg = String(body.package || '').toLowerCase();
+          const prefix = pkg.includes('paisa') ? 'GPAY' 
+                       : (pkg.includes('phonepe') ? 'PPE' 
+                       : (pkg.includes('paytm') ? 'PYTM' : 'UPI'));
+          utr = `${prefix}${Date.now().toString().slice(-8)}`;
+        }
+
+        const sender = body.sender || body.senderVpa || body.title || '';
+        console.log(`[Atelier UPI Gateway] Extracted -> UTR: ${utr}, Amount: ₹${amount}, Sender: ${sender}`);
+        await db.recordBankCredit({ utr, amount, sender, raw: allText });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, status: 'OK', processed: true, utr, amount }));
+        return;
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, status: 'OK', processed: !!(utr && amount), utr, amount }));
+      res.end(JSON.stringify({ success: true, status: 'OK', processed: false, utr, amount }));
       return;
     }
 
