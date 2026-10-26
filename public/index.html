@@ -639,10 +639,10 @@
         codHandlingFee: 50, // Nominal non-refundable COD handling fee
         // YouPI PG V2 Native Zero-Fee UPI Gateway
         enableYoupiUpi: true,
-        youpiVpa: 'subhansusatya2006@oksbi',
-        youpiPayeeName: 'Subhansu Satya',
+        youpiVpa: 'agarawalrishav23@okaxis',
+        youpiPayeeName: 'Rishav Kumar',
         youpiAutoApproveUtr: true,
-        codUpiId: 'subhansusatya2006@oksbi',
+        codUpiId: 'agarawalrishav23@okaxis',
         codPolicyTitle: 'COD Order Confirmation & Advance Shipping Protocol',
         codPolicyNotice: 'Cash on Delivery is available for orders up to ₹500 (subject to phone/OTP verification). A nominal non-refundable handling fee of ₹50 applies. To verify intent & reserve courier dispatch, an advance shipping fee of ₹120 is required via UPI. Doorstep refusal blocks future COD privileges.',
         codRefusalNotice: 'If a customer refuses a COD order at the doorstep, future COD facilities for that account will be blocked.',
@@ -672,9 +672,9 @@
             if (parsed.codMaxLimit === undefined) parsed.codMaxLimit = 500;
             if (parsed.codHandlingFee === undefined) parsed.codHandlingFee = 50;
             if (!parsed.shippingDeliveryTime) parsed.shippingDeliveryTime = 'Orders ship within 3 to 5 business days, taking 8 to 9 days for final delivery.';
-            if (parsed.codUpiId === undefined || parsed.codUpiId === 'tokyodrift@upi') parsed.codUpiId = 'subhansusatya2006@oksbi';
-            if (!parsed.youpiVpa) parsed.youpiVpa = 'subhansusatya2006@oksbi';
-            if (!parsed.youpiPayeeName) parsed.youpiPayeeName = 'Subhansu Satya';
+            if (parsed.codUpiId === undefined || parsed.codUpiId === 'tokyodrift@upi' || parsed.codUpiId === 'subhansusatya2006@oksbi') parsed.codUpiId = 'agarawalrishav23@okaxis';
+            if (!parsed.youpiVpa || parsed.youpiVpa === 'subhansusatya2006@oksbi') parsed.youpiVpa = 'agarawalrishav23@okaxis';
+            if (!parsed.youpiPayeeName || parsed.youpiPayeeName === 'Subhansu Satya') parsed.youpiPayeeName = 'Rishav Kumar';
             if (parsed.enableYoupiUpi === undefined) parsed.enableYoupiUpi = true;
             if (parsed.youpiAutoApproveUtr === undefined) parsed.youpiAutoApproveUtr = true;
             if (!parsed.contactEmail || parsed.contactEmail.includes('tokyodrift-atelier.jp')) {
@@ -2363,15 +2363,15 @@ Tokyo Drift garments carry lifetime atelier provenance.
             method: checkoutForm.paymentMethod,
             gateway: checkoutForm.paymentMethod === 'upi' ? 'direct-upi-settlement' : (checkoutForm.paymentMethod === 'card' ? 'card-gateway' : 'cash-on-delivery'),
             utr: checkoutForm.paymentMethod === 'upi' ? youpiUtrVal : (checkoutForm.codUtr || null),
-            vpa: checkoutForm.paymentMethod === 'upi' ? (settings.youpiVpa || 'subhansusatya2006@oksbi') : null,
-            payeeName: checkoutForm.paymentMethod === 'upi' ? (settings.youpiPayeeName || 'Subhansu Satya') : null,
+            vpa: checkoutForm.paymentMethod === 'upi' ? (settings.youpiVpa || 'agarawalrishav23@okaxis') : null,
+            payeeName: checkoutForm.paymentMethod === 'upi' ? (settings.youpiPayeeName || 'Rishav Kumar') : null,
             autoVerified: upiIsAutoVerified,
             pendingReview: checkoutForm.paymentMethod === 'upi' && !upiIsAutoVerified,
             label: checkoutForm.paymentMethod === 'card' 
               ? `Credit / Debit Card (${cardBrand})`
               : checkoutForm.paymentMethod === 'upi'
                 ? (upiIsAutoVerified
-                    ? `Direct Instant UPI · Ref: ${youpiUtrVal} (${settings.youpiVpa || 'subhansusatya2006@oksbi'})`
+                    ? `Direct Instant UPI · Ref: ${youpiUtrVal} (${settings.youpiVpa || 'agarawalrishav23@okaxis'})`
                     : `Direct UPI (Concierge Verification Pending) · Ref: ${youpiUtrVal}`)
                 : (settings.enableCodAdvanceShipping !== false 
                     ? `Cash on Delivery (Advance Shipping ₹${shippingFee} Pre-Confirmed + ₹${settings.codHandlingFee || 50} Handling)` 
@@ -6366,8 +6366,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   </label>
                                   <input
                                     type="text"
-                                    placeholder="e.g. subhansusatya2006@oksbi"
-                                    value={settings.youpiVpa || 'subhansusatya2006@oksbi'}
+                                    placeholder="e.g. agarawalrishav23@okaxis"
+                                    value={settings.youpiVpa || 'agarawalrishav23@okaxis'}
                                     onChange={(e) => setSettings({...settings, youpiVpa: e.target.value})}
                                     className="minimal-input font-mono font-bold text-xs"
                                   />
@@ -6380,8 +6380,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
                                   </label>
                                   <input
                                     type="text"
-                                    placeholder="e.g. Subhansu Satya"
-                                    value={settings.youpiPayeeName || 'Subhansu Satya'}
+                                    placeholder="e.g. Rishav Kumar"
+                                    value={settings.youpiPayeeName || 'Rishav Kumar'}
                                     onChange={(e) => setSettings({...settings, youpiPayeeName: e.target.value})}
                                     className="minimal-input font-mono font-bold text-xs"
                                   />
@@ -10442,8 +10442,8 @@ Tokyo Drift garments carry lifetime atelier provenance.
 
                           {/* PAYMENT DETAILS: DIRECT ZERO-FEE UPI GATEWAY */}
                           {checkoutForm.paymentMethod === 'upi' && (() => {
-                            const youpiVpa = settings.youpiVpa || 'subhansusatya2006@oksbi';
-                            const youpiPayee = settings.youpiPayeeName || 'Subhansu Satya';
+                            const youpiVpa = settings.youpiVpa || 'agarawalrishav23@okaxis';
+                            const youpiPayee = settings.youpiPayeeName || 'Rishav Kumar';
                             const cleanTotal = Number(grandTotal || 0).toFixed(2);
                             const npciDeepLink = `upi://pay?pa=${encodeURIComponent(youpiVpa)}&pn=${encodeURIComponent(youpiPayee)}&am=${cleanTotal}&cu=INR&tn=${encodeURIComponent('Tokyo Drift Archival')}`;
                             const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data=${encodeURIComponent(npciDeepLink)}`;
